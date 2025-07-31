@@ -1,2 +1,3 @@
-def hello() -> str:
-    return "Hello from zarr-sqlite!"
+from .zarr_sqlite import SQLiteStore
+
+__all__ = ["SQLiteStore"]

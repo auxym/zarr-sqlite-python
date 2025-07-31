@@ -6,9 +6,15 @@ readme = "README.md"
 authors = [
     { name = "Francis Thérien", email = "frtherien@gmail.com" }
 ]
-requires-python = ">=3.13"
+requires-python = ">=3.11"
 dependencies = [
     "zarr>=3.1.0",
+]
+
+[project.optional-dependencies]
+test = [
+    "mypy>=1.17.0",
+    "pytest>=8.4.1",
 ]
 
 [build-system]
