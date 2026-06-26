@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+__version__ = "0.1.0"
+
 import asyncio
 import sqlite3
 from pathlib import Path
@@ -16,6 +18,8 @@ from zarr.abc.store import (
 )
 from zarr.core.buffer import Buffer
 from zarr.core.common import BytesLike
+from zarr import __version__ as zarr_version
+from sys import version as py_version
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Iterable, Sequence
@@ -177,9 +181,35 @@ class SQLiteStore(Store):
         return cur.execute(query, params)
 
     async def _create_schema(self) -> None:
-        await self._execute_write(
-            "CREATE TABLE IF NOT EXISTS zarr(k TEXT PRIMARY KEY, v BLOB)"
-        )
+        await self._ensure_open()
+        if self._lock is None:
+            raise ValueError("Store is not open")
+
+        schema =  ["CREATE TABLE IF NOT EXISTS zarr(k TEXT PRIMARY KEY, v BLOB)",
+                   "CREATE TABLE IF NOT EXISTS zarr_versions(name TEXT PRIMARY KEY, version TEXT)"]
+
+        set_version  = "INSERT OR REPLACE INTO zarr_versions (name, version) VALUES (?, ?)"
+        versions = {'SqliteStore': __version__,
+                     'Zarr_Create': zarr_version,
+                     'Python_Create':  py_version}
+        async with self._lock:
+            cursor = self._con.cursor()
+            for statement in schema:
+                _ = cursor.execute(statement)
+            for name, ver in versions.items():
+                _ = cursor.execute(set_version, (name, ver))
+            self._con.commit()
+
+    async def get_versions(self):
+        "return a dict of version information"
+        cur = await self._execute("SELECT * from zarr_versions;")
+        result = {}
+        print(cur)
+        for row in cur.fetchall():
+            result[row.name] = row.version
+            print("got result ", row)
+        return result
+
 
     @override
     def close(self) -> None:
@@ -200,7 +230,8 @@ class SQLiteStore(Store):
     @override
     async def clear(self) -> None:
         """Clear the store."""
-        await self._execute_write("DROP TABLE IF EXISTS zarr")
+        await self._execute_write("DROP TABLE IF EXISTS zarr;")
+        await self._execute_write("DROP TABLE IF exists zarr_versions;")
         await self._create_schema()
 
     @override
