@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 __version__ = "0.1.0"
+schema_version = "1.0"
 
 import asyncio
 import sqlite3
@@ -8,6 +9,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, override, cast
 import urllib.parse
 import uuid
+from datetime import datetime
 
 from zarr.abc.store import (
     ByteRequest,
@@ -189,9 +191,12 @@ class SQLiteStore(Store):
                    "CREATE TABLE IF NOT EXISTS zarr_versions(name TEXT PRIMARY KEY, version TEXT)"]
 
         set_version  = "INSERT OR REPLACE INTO zarr_versions (name, version) VALUES (?, ?)"
-        versions = {'SqliteStore': __version__,
-                     'Zarr_Create': zarr_version,
-                     'Python_Create':  py_version}
+        versions = {'sqlitestore_version': __version__,
+                    'sqlitestore_schema': schema_version,
+                    'create_zarr_version': zarr_version,
+                    'create_python_version': py_version,
+                    'create_datetime': datetime.now().isoformat(sep=' ', timespec='seconds'),
+                    }
         async with self._lock:
             cursor = self._con.cursor()
             for statement in schema:
@@ -200,14 +205,14 @@ class SQLiteStore(Store):
                 _ = cursor.execute(set_version, (name, ver))
             self._con.commit()
 
-    async def get_versions(self):
-        "return a dict of version information"
-        cur = await self._execute("SELECT * from zarr_versions;")
+    def get_versions(self):
+        """return a dict of version information (non-async)"""
         result = {}
-        print(cur)
-        for row in cur.fetchall():
-            result[row.name] = row.version
-            print("got result ", row)
+        with sqlite3.connect(self.database_uri, uri=True, autocommit=False, check_same_thread=False) as con:
+            cur = con.cursor()
+            cur.execute("SELECT * from zarr_versions")
+            for row in cur.fetchall():
+                result[row[0]] = row[1]
         return result
 
 
