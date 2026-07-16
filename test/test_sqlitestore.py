@@ -5,9 +5,10 @@ import os
 import numpy as np
 
 import pytest
-
+import tempfile
 import zarr
 
+from pathlib import Path
 from tempfile import NamedTemporaryFile
 
 from zarr_sqlite import SQLiteStore
@@ -46,6 +47,7 @@ def test_store_array(sqlite_store):
     read_back = z[:]
     assert np.array_equal(read_back, data)
 
+
 def test_create_group(sqlite_store):
     root = zarr.create_group(store=sqlite_store)
     group1 = root.create_group("group1")
@@ -55,13 +57,12 @@ def test_create_group(sqlite_store):
     assert "group1" in root
     assert isinstance(root["group1"], zarr.Group)
 
+
 def test_save_array_to_group(temp_db_file):
     with SQLiteStore(temp_db_file) as sqlite_store:
         root = zarr.create_group(store=sqlite_store)
         group1 = root.create_group("group1")
-        z = group1.create_array(
-            shape=(100, 100), chunks=(10, 10), dtype="f4", name="z"
-        )
+        z = group1.create_array(shape=(100, 100), chunks=(10, 10), dtype="f4", name="z")
 
         data = random_array((100, 100), dtype=np.float32)
         z[:, :] = data
@@ -72,13 +73,12 @@ def test_save_array_to_group(temp_db_file):
         root = zarr.open_group(store=sqlite_store)
         assert np.array_equal(data, root["group1/z"][:])
 
+
 def test_delete_array(temp_db_file):
     with SQLiteStore(temp_db_file) as sqlite_store:
         root = zarr.create_group(store=sqlite_store)
         group1 = root.create_group("group1")
-        group1.create_array(
-            shape=(100, 100), chunks=(10, 10), dtype="f4", name="z"
-        )
+        group1.create_array(shape=(100, 100), chunks=(10, 10), dtype="f4", name="z")
 
     with SQLiteStore(temp_db_file) as sqlite_store:
         root = zarr.open_group(store=sqlite_store)
@@ -94,6 +94,7 @@ def test_delete_array(temp_db_file):
         with pytest.raises(KeyError):
             root["group1/z"][:]
 
+
 def test_append_array(sqlite_store):
     z = zarr.create_array(
         store=sqlite_store, shape=(100, 100), chunks=(10, 10), dtype="f4"
@@ -106,3 +107,26 @@ def test_append_array(sqlite_store):
     assert z.shape == (200, 100)
     expected = np.tile(data, (2, 1))
     assert np.array_equal(z[:], expected)
+
+
+def test_store_array_creates_file_and_persists():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db_path = Path(tmpdir) / "test.db"
+
+        assert not db_path.exists(), "Database file should not exist before store creation"
+
+        data = random_array((50, 50), dtype=np.float32)
+
+        with SQLiteStore(db_path) as sqlite_store:
+            root = zarr.create_group(store=sqlite_store)
+            z = root.create_array(shape=(50, 50), chunks=(10, 10), dtype="f4", name="array")
+            z[:, :] = data
+            read_back = z[:]
+            assert np.array_equal(read_back, data)
+
+        assert db_path.exists(), "Database file should be created by SQLiteStore"
+
+        with SQLiteStore(db_path) as sqlite_store:
+            root = zarr.open_group(store=sqlite_store)
+            assert "array" in root
+            assert np.array_equal(root["array"][:], data)

@@ -97,7 +97,7 @@ class SQLiteStore(Store):
         Ref: https://sqlite.org/uri.html
         """
 
-        query = {"mode": ["ro"] if read_only else ["rw"]}
+        query = {"mode": ["ro"] if read_only else ["rwc"]}
         uri_path = ""
 
         if isinstance(database, Path):
