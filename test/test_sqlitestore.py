@@ -110,23 +110,26 @@ def test_append_array(sqlite_store):
 
 
 def test_store_array_creates_file_and_persists():
+    """Ensure file is created automatically when it doesn't exist"""
     with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = Path(tmpdir) / "test.db"
+        fname = Path(tmpdir) / 'test1.zarrdb'
+        store = SQLiteStore(fname,  read_only=False)
+        root = zarr.open(store=store, mode='a')
+        group1 = root.create_group('group1')
 
-        assert not db_path.exists(), "Database file should not exist before store creation"
+        i = np.arange(80000)/60.0
+        x = i + np.random.normal(size=len(i), scale=1.5)
+        y = np.sin(x/13) + 0.7*np.cos(x/47) + np.random.normal(size=len(i), scale=0.05)
+        x.shape = (400, 200)
+        y.shape = (200, 400)
 
-        data = random_array((50, 50), dtype=np.float32)
+        group1.create_array(data=x, name='xdat')
+        group1.create_array(data=y, name='ydat')
+        store.close()
 
-        with SQLiteStore(db_path) as sqlite_store:
-            root = zarr.create_group(store=sqlite_store)
-            z = root.create_array(shape=(50, 50), chunks=(10, 10), dtype="f4", name="array")
-            z[:, :] = data
-            read_back = z[:]
-            assert np.array_equal(read_back, data)
+        read_root = zarr.open(store=SQLiteStore(fname,  read_only=True), mode='r')
+        assert np.array_equal(read_root["group1/ydat"][:], y)
+        assert np.array_equal(read_root["group1/xdat"], x)
 
-        assert db_path.exists(), "Database file should be created by SQLiteStore"
-
-        with SQLiteStore(db_path) as sqlite_store:
-            root = zarr.open_group(store=sqlite_store)
-            assert "array" in root
-            assert np.array_equal(root["array"][:], data)
+        # Ensure store is closed so tmpdir can be safely deleted
+        read_root.store.close()

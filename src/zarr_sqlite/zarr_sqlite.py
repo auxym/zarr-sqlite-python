@@ -14,13 +14,12 @@ from zarr.abc.store import (
     Store,
     SuffixByteRequest,
 )
-from zarr.core.buffer import Buffer
-from zarr.core.common import BytesLike
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Iterable, Sequence
-
     from zarr.core.buffer import BufferPrototype
+    from zarr.core.buffer import Buffer
+    from zarr.core.common import BytesLike
 
 
 class SQLiteStore(Store):
@@ -75,7 +74,7 @@ class SQLiteStore(Store):
         database: str | Path,
         *,
         read_only: bool = False,
-        journal_mode: str | None = 'WAL',
+        journal_mode: str | None = "WAL",
     ) -> None:
         super().__init__(read_only=read_only)
         self.database_uri = self._build_database_uri(database, read_only=read_only)
@@ -144,7 +143,13 @@ class SQLiteStore(Store):
         )
         if not self._read_only:
             if self._journal_mode is not None:
-                if self._journal_mode not in ["DELETE", "TRUNCATE", "PERSIST", "WAL", "OFF"]:
+                if self._journal_mode not in [
+                    "DELETE",
+                    "TRUNCATE",
+                    "PERSIST",
+                    "WAL",
+                    "OFF",
+                ]:
                     raise ValueError(f"Invalid journal_mode: {self._journal_mode}")
                 self._con.autocommit = True
                 self._con.execute(f"PRAGMA journal_mode={self._journal_mode}")
