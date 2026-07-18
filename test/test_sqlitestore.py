@@ -1,22 +1,17 @@
 """Test integration with zarr library"""
 
 import os
-
-import numpy as np
-
-import pytest
 import tempfile
-import zarr
-
 from pathlib import Path
-from tempfile import NamedTemporaryFile
-
+import pytest
+import numpy as np
+import zarr
 from zarr_sqlite import SQLiteStore
 
 
 @pytest.fixture
 def temp_db_file():
-    tmp_db = NamedTemporaryFile(suffix=".db", delete=False, delete_on_close=False)
+    tmp_db = tempfile.NamedTemporaryFile(suffix=".db", delete=False, delete_on_close=False)
     tmp_db.close()
     yield tmp_db.name
     os.remove(tmp_db.name)

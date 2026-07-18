@@ -366,6 +366,7 @@ test = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "numpy" },
     { name = "pytest" },
 ]
 
@@ -378,4 +379,7 @@ requires-dist = [
 provides-extras = ["test"]
 
 [package.metadata.requires-dev]
-dev = [{ name = "pytest", specifier = ">=8.4.1" }]
+dev = [
+    { name = "numpy", specifier = ">=2.3.2" },
+    { name = "pytest", specifier = ">=8.4.1" },
+]
