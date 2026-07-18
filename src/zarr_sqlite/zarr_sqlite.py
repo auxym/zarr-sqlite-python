@@ -251,6 +251,8 @@ class SQLiteStore(Store):
         elif isinstance(byte_range, SuffixByteRequest):
             a = min(len(blob), byte_range.suffix)
             return prototype.buffer.from_bytes(blob[-a:])
+        else:
+            raise ValueError(f"Unsupported byte range type: {type(byte_range)}")
 
     @override
     async def get_partial_values(
