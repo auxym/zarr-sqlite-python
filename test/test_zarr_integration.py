@@ -104,6 +104,50 @@ def test_append_array(sqlite_store):
     assert np.array_equal(z[:], expected)
 
 
+def test_group_listing_methods(sqlite_store):
+    root = zarr.create_group(store=sqlite_store)
+
+    a = root.create_group("a")
+    a.create_array(shape=(10, 10), chunks=(10, 10), dtype="f4", name="array_a")
+    sub = a.create_group("sub")
+    sub.create_array(shape=(5, 5), chunks=(5, 5), dtype="f4", name="array_b")
+
+    b = root.create_group("b")
+    b.create_array(shape=(3, 3), chunks=(3, 3), dtype="f4", name="array_c")
+
+    root = zarr.open_group(store=sqlite_store)
+
+    assert set(root.keys()) == {"a", "b"}
+    assert set(root.array_keys()) == set()
+    assert set(root.group_keys()) == {"a", "b"}
+
+    assert set(k for k, _ in root.groups()) == {"a", "b"}
+    assert all(isinstance(g, zarr.Group) for _, g in root.groups())
+
+    a = root["a"]
+    assert set(a.keys()) == {"array_a", "sub"}
+    assert set(a.array_keys()) == {"array_a"}
+    assert set(a.group_keys()) == {"sub"}
+    assert len(list(a.array_values())) == 1
+    assert set(k for k, _ in a.arrays()) == {"array_a"}
+    assert all(isinstance(arr, zarr.Array) for arr in a.array_values())
+
+    sub = a["sub"]
+    assert set(sub.array_keys()) == {"array_b"}
+    assert len(list(sub.array_values())) == 1
+
+    assert set(g.name for g in root.group_values()) == {"/a", "/b"}
+    assert all(isinstance(g, zarr.Group) for g in root.group_values())
+
+    assert set(k for k, _ in root.groups()) == {"a", "b"}
+    assert isinstance(root["a"], zarr.Group)
+    assert isinstance(root["b"], zarr.Group)
+    assert isinstance(root["a/array_a"], zarr.Array)
+    assert isinstance(root["a/sub/array_b"], zarr.Array)
+
+    assert set(root) == {"a", "b"}
+
+
 def test_store_array_creates_file_and_persists():
     """Ensure file is created automatically when it doesn't exist"""
     with tempfile.TemporaryDirectory() as tmpdir:

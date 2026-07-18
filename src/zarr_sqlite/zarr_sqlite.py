@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+from typing import override, cast
+from collections.abc import Iterable, AsyncIterator, Sequence
 import asyncio
 import sqlite3
 from pathlib import Path
-from typing import TYPE_CHECKING, override, cast
 import urllib.parse
 import uuid
+
+from zarr.core.buffer import BufferPrototype, Buffer
+from zarr.core.common import BytesLike
 
 from zarr.abc.store import (
     ByteRequest,
@@ -14,12 +18,6 @@ from zarr.abc.store import (
     Store,
     SuffixByteRequest,
 )
-
-if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Iterable, Sequence
-    from zarr.core.buffer import BufferPrototype
-    from zarr.core.buffer import Buffer
-    from zarr.core.common import BytesLike
 
 
 class SQLiteStore(Store):
@@ -302,20 +300,23 @@ class SQLiteStore(Store):
 
     @override
     async def list_prefix(self, prefix: str) -> AsyncIterator[str]:
-        if not prefix.endswith("/"):
-            prefix += "/"
-        cur = await self._execute("SELECT k FROM zarr WHERE k GLOB ?", (prefix + "*",))
+        glob = prefix + "*"
+        cur = await self._execute("SELECT k FROM zarr WHERE k GLOB ?", (glob,))
         for row in cast(Iterable[tuple[str]], cur):
             yield row[0]
 
     @override
     async def list_dir(self, prefix: str) -> AsyncIterator[str]:
+        if prefix and not prefix.endswith("/"):
+            prefix += "/"
+
         seen: set[str] = set()
         async for full_key in self.list_prefix(prefix):
             relative_parts = full_key.removeprefix(prefix).split("/")
             k = relative_parts[0]
             if len(relative_parts) > 1:
-                k = k + "/"  # Is a prefix
+                # k is a prefix
+                k = k + "/"
             if k not in seen:
                 seen.add(k)
                 yield k
