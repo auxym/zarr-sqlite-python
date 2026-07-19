@@ -378,7 +378,7 @@ class SQLiteStore(Store):
         cur = await self._execute("SELECT LENGTH(v) FROM zarr WHERE k = ?", (key,))
         row = cur.fetchone()
         if row is None:
-            raise ValueError(f"Key '{key}' does not exist in store.")
+            raise FileNotFoundError(key)
         return int(row[0])
 
     @override
@@ -389,6 +389,6 @@ class SQLiteStore(Store):
             "SELECT SUM(LENGTH(v)) FROM zarr WHERE k GLOB ?", (glob,)
         )
         size = cur.fetchone()
-        if size is None:
+        if size is None or size[0] is None:
             return 0
-        return int(size)
+        return int(size[0])

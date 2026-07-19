@@ -5,6 +5,7 @@ from zarr.core.buffer import BufferPrototype, default_buffer_prototype
 from zarr.abc.store import OffsetByteRequest, RangeByteRequest, SuffixByteRequest
 
 from zarr_sqlite import SQLiteStore
+from zarr_sqlite.zarr_sqlite import _validate_key, _normalize_prefix
 
 
 def make_buffer(data: bytes, prototype: BufferPrototype | None = None) -> object:
@@ -286,3 +287,97 @@ async def test_is_empty(store):
     await store.set("a/b", make_buffer(b"1"))
     assert not await store.is_empty("a/")
     assert await store.is_empty("c/")
+
+
+@pytest.mark.asyncio
+async def test_clear(store):
+    await store.set("a", make_buffer(b"1"))
+    await store.set("b/c", make_buffer(b"2"))
+    assert await collect(store.list())
+    await store.clear()
+    assert await collect(store.list()) == []
+
+
+@pytest.mark.asyncio
+async def test_getsize(store):
+    await store.set("k", make_buffer(b"12345"))
+    assert await store.getsize("k") == 5
+
+    await store.set("empty", make_buffer(b""))
+    assert await store.getsize("empty") == 0
+
+    with pytest.raises(FileNotFoundError):
+        await store.getsize("missing")
+
+
+@pytest.mark.asyncio
+async def test_getsize_prefix(store):
+    await store.set("a/1", make_buffer(b"abc"))
+    await store.set("a/2", make_buffer(b"de"))
+    await store.set("a/3", make_buffer(b""))
+    assert await store.getsize_prefix("a/") == 5
+
+    # non-existent prefix, getsize_prefix should return 0
+    assert await store.getsize_prefix("missing/") == 0
+
+
+def test_eq_same_path(tmp_path):
+    db = tmp_path / "eq.db"
+    s1 = SQLiteStore(db)
+    s2 = SQLiteStore(str(db))
+    s3 = SQLiteStore(tmp_path / "other.db")
+    try:
+        assert s1 == s2
+        assert s1 != s3
+        assert s1 != "not a store"
+    finally:
+        s1.close()
+        s2.close()
+        s3.close()
+
+
+def test_with_read_only():
+    s = SQLiteStore(":memory:", read_only=False)
+    try:
+        ro = s.with_read_only(read_only=True)
+        assert ro._read_only is True
+        assert ro._is_open is False
+    finally:
+        s.close()
+
+
+def test_validate_key_valid():
+    for key in ["", "a", "a/b", "a/b/c.json", "0", "with-dash_and.dot"]:
+        _validate_key(key)
+
+
+def test_validate_key_rejects_leading_slash():
+    invalid_keys = ["/a", "a/", "a//b", "a/b/"]
+    valid_keys = ["", "a", "a/b", "a/b/c", "foo/bar/baz/qux"]
+
+    for k in invalid_keys:
+        with pytest.raises(ValueError):
+            _validate_key(k)
+
+    for k in valid_keys:
+        # Should not raise
+        _validate_key(k)
+
+
+def test_normalize_prefix_valid_unchanged():
+    assert _normalize_prefix("a/") == "a/"
+    assert _normalize_prefix("a/b/") == "a/b/"
+
+    assert _normalize_prefix("a") == "a/"
+    assert _normalize_prefix("a/b") == "a/b/"
+
+    assert _normalize_prefix("") == ""
+
+    with pytest.raises(ValueError):
+        _normalize_prefix("/a")
+
+    with pytest.raises(ValueError):
+        _normalize_prefix("a//b")
+
+    with pytest.raises(ValueError):
+        _normalize_prefix("/")
