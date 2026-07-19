@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import override, cast
+from typing import override
 from collections.abc import Iterable, AsyncIterator, Sequence
 import asyncio
 import sqlite3
@@ -230,7 +230,7 @@ class SQLiteStore(Store):
         prefix = _normalize_prefix(prefix)
         glob = prefix + "*"
         cur = await self._execute("SELECT COUNT(*) FROM zarr WHERE k GLOB ?", (glob,))
-        return cast(tuple[int], cur.fetchone())[0] == 0
+        return cur.fetchone()[0] == 0
 
     @override
     async def clear(self) -> None:
@@ -268,7 +268,7 @@ class SQLiteStore(Store):
 
         _validate_key(key)
         cur = await self._execute("SELECT v FROM zarr WHERE k = ?", (key,))
-        row = cast(tuple[object] | None, cur.fetchone())
+        row = cur.fetchone()
         if row is None:
             return None
         blob = row[0]
@@ -335,16 +335,16 @@ class SQLiteStore(Store):
     @override
     async def list(self) -> AsyncIterator[str]:
         cur = await self._execute("SELECT k FROM zarr")
-        for row in cast(Iterable[tuple[str]], cur):
-            yield row[0]
+        for row in cur:
+            yield str(row[0])
 
     @override
     async def list_prefix(self, prefix: str) -> AsyncIterator[str]:
         prefix = _normalize_prefix(prefix)
         glob = prefix + "*"
         cur = await self._execute("SELECT k FROM zarr WHERE k GLOB ?", (glob,))
-        for row in cast(Iterable[tuple[str]], cur):
-            yield row[0]
+        for row in cur:
+            yield str(row[0])
 
     @override
     async def list_dir(self, prefix: str) -> AsyncIterator[str]:
@@ -376,10 +376,10 @@ class SQLiteStore(Store):
     async def getsize(self, key: str) -> int:
         _validate_key(key)
         cur = await self._execute("SELECT LENGTH(v) FROM zarr WHERE k = ?", (key,))
-        row = cast(tuple[int] | None, cur.fetchone())
+        row = cur.fetchone()
         if row is None:
             raise ValueError(f"Key '{key}' does not exist in store.")
-        return row[0]
+        return int(row[0])
 
     @override
     async def getsize_prefix(self, prefix: str) -> int:
@@ -388,7 +388,7 @@ class SQLiteStore(Store):
         cur = await self._execute(
             "SELECT SUM(LENGTH(v)) FROM zarr WHERE k GLOB ?", (glob,)
         )
-        size = cast(tuple[int | None], cur.fetchone())[0]
+        size = cur.fetchone()
         if size is None:
-            size = 0
-        return size
+            return 0
+        return int(size)
