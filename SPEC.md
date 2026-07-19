@@ -181,6 +181,15 @@ underlying SQLite database encoding. No Unicode normalization shall be
 performed. Keys must be compared using SQLite's native TEXT comparison, for
 example when running `SELECT` queries for key lookup.
 
+Writers must insert only valid keys in the zarr table. Valid keys are
+those which respect the following rules:
+
+1. The final character of the key must not be a `/` character.
+2. The first character of the key must not be a `/` character.
+3. A key must not contain the substring `//`.
+
+The empty string is a valid key.
+
 Values are stored as binary blobs (SQLite type `BLOB`) exactly as provided by
 the Zarr client, without modification.
 
