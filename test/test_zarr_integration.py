@@ -71,26 +71,27 @@ def test_save_array_to_group(temp_db_file):
         assert np.array_equal(data, root["group1/z"][:])
 
 
-@pytest.mark.skip(reason="assumed bug in zarr-python")
 def test_delete_array(temp_db_file):
     with SQLiteStore(temp_db_file) as sqlite_store:
         root = zarr.create_group(store=sqlite_store)
         group1 = root.create_group("group1")
-        group1.create_array(shape=(100, 100), chunks=(10, 10), dtype="f4", name="z")
+        z = group1.create_array(shape=(100, 100), chunks=(10, 10), dtype="f4", name="z")
+        z[:] = 200
 
-    with SQLiteStore(temp_db_file) as sqlite_store:
-        root = zarr.open_group(store=sqlite_store)
         assert "group1/z" in root
         assert root["group1/z"].shape == (100, 100)
+
+        # Delete array
         del root["group1/z"]
 
-    with SQLiteStore(temp_db_file) as sqlite_store:
-        root = zarr.open_group(store=sqlite_store)
+        # Ensure group still exists
         assert "group1" in root
         assert isinstance(root["group1"], zarr.Group)
+
+        # Ensure array deleted
         assert "group1/z" not in root
         with pytest.raises(KeyError):
-            root["group1/z"][:]
+            root["group1/z"]
 
 
 def test_append_array(sqlite_store):
