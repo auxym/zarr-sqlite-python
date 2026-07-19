@@ -39,13 +39,13 @@ A SQLiteStore file is a SQLite database conforming to this specification.
 An *implementation* refers to library or software that is designed to read and
 write SQLiteStore files by implementing the operations defined by the [*Abstract store interface*](https://zarr-specs.readthedocs.io/en/latest/v3/core/index.html#abstract-store-interface).
 
-A *reader* is a implementation which is performing read operations on a SQLiteStore
+A *reader* is an implementation that is reading a SQLiteStore
 file.
 
-A *writer* is a implementation which is creating, modifying or adding data to a
+A *writer* is an implementation that is creating or modifying a
 SQLiteStore file.
 
-A *client* refers to software which uses an *implementation*, for example
+A *client* refers to software that uses an *implementation*, for example
 by calling the functions defined by the implementation. Examples of clients
 may include [zarr-python](https://zarr.readthedocs.io/en/stable/) and [zarrs](
 https://zarrs.dev/).
@@ -81,8 +81,8 @@ Files conforming to this specification require features introduced in SQLite
 
 The SQLite file format defines a 4-byte integer at offset 68 which can be used
 to identify the application-specific file type. SQLiteStore files must have this
-value set to the hexadecimal integer `0x10b50760`. This requirement may achieve
-this by executing the following SQL pragma statement:
+value set to the hexadecimal integer `0x10b50760`. Implementations may satisfy
+this requirement by executing the following SQL pragma statement:
 
 ```sql
 PRAGMA application_id = 0x10b50760
@@ -94,7 +94,8 @@ SQLiteStore files must contain two tables, as described below. The value columns
 *v* must not contain NULL values and must therefore be specified with a
 `NOT NULL` constraint in the table schemas.
 
-The schema may be created by the following SQL statements:
+Implementations may satisfy this requirement by executing the following SQL
+statements:
 
 ```sql
 CREATE TABLE IF NOT EXISTS sqlitestore_metadata(
@@ -128,39 +129,39 @@ Readers must ignore any record with a key that is not described here.
 
 | Key | Required | Description of value |
 |-----|----------|----------------------|
-| `sqlitestore_version` | Yes | Version of the SQLiteStore file format in `MAJOR.MINOR` format. As of the present document, this should be the string "1.0". |
+| `sqlitestore_version` | Yes | SQLiteStore file format version, formatted as `MAJOR.MINOR`. For SQLiteStore version 1.0, this value must be the string "1.0". |
 | `compatible_flags`    | Yes | Comma-separated list of flag strings. Reserved for future extensions to the store format. |
 | `incompatible_flags`  | Yes | Comma-separated list of flag strings. Reserved for future extensions to the store format. |
 | `created_by`  | No | Arbitrary string describing the software that wrote the file. |
 | `created_time`  | No | Timestamp indicating when the file was most recently modified, formatted as a string that conforms to [RFC3339](https://datatracker.ietf.org/doc/html/rfc3339). |
 
-Readers shall reject files whose major version is unsupported, as specified by
+Readers must reject files whose major version is unsupported, as specified by
 the `sqlitestore_version` metadata record. Readers should ignore minor versions
 greater than those they implement unless incompatible_flags contains unknown
 values.
 
 Compatible flags may be used in future versions of SQLiteStore to declare that
 the store uses optional features but may still be read or written to by an
-implementation which does not implement these features.
+implementation that does not implement these features.
 
 Incompatible flags may be used in future versions of SQLiteStore to declare that
 the store uses optional features that must be supported by the implementation in
 order to read or write the store.
 
-Readers shall:
+Readers must:
 
-1. ignore all compatible flags it does not recognize;
+1. Ignore all compatible flags it does not recognize;
 
-2. reject the file if any incompatible flag is not recognized.
+2. Reject the file if any incompatible flag is not recognized.
 
 In SQLiteStore version 1.0, no flags are defined. Writers must therefore set the
 values of "compatible_flags" and "incompatible_flags" to the empty string
 (`""`).
 
-The record `created_by` must not be relied upon by readers to determine the method
-by which the file is to be interpreted. The file format MUST be fully described
-by the metadata records `sqlitestore_version`, `compatible_flags` and
-`incompatible_flags`.
+The `created_by` record is informational. Readers must not use it to determine
+how the file is to be interpreted. The file format must be fully determined by
+the metadata records sqlitestore_version, compatible_flags, and
+incompatible_flags.
 
 ### Table `zarr`
 
@@ -191,15 +192,15 @@ for SQLiteStore files.
 Implementations may use journal mode `WAL` (write-ahead log) for performance or
 concurrency reasons, especially in write-heavy use cases. When using `WAL`
 journal mode, implementations should attempt to restore the journal mode to
-`DELETE` or perform a WAL checkpoint is executed before the databased is closed.
+`DELETE` or perform a WAL checkpoint before the database is closed.
 
 The purpose of this best-effort requirement is to ensure all data is moved by
 SQLite from the WAL files (files suffixed with `-wal` and `-shm` automatically
-created by SQLite) to the main database file, so that the SQLiteStore database
+created by SQLite) to the main database file, so that the SQLiteStore file
 consists of a single self-contained file that can be safely shared.
 
 ## Limitations
 
-The maximum size of a value which can be stored (for example, an array chunk) is
+The maximum size of a value that can be stored (for example, an array chunk) is
 limited to 2147483645 bytes (3 bytes less than 2 GiB) by current SQLite
 implementations.
