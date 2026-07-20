@@ -176,10 +176,10 @@ The `zarr` table acts as a key-value store for the Zarr data.
 
 Keys are stored exactly as provided by the Zarr client, without modification.
 Per the *Abstract store interface* specification, keys are Unicode strings.
-Implementations shall preserve the logical Unicode string regardless of the
+Implementations must preserve the logical Unicode string regardless of the
 underlying SQLite database encoding. No Unicode normalization shall be
-performed. Keys must be compared using SQLite's native TEXT comparison, for
-example when running `SELECT` queries for key lookup.
+performed. Implementations must preserve the key comparison semantics defined by
+the Zarr core specification.
 
 Writers must insert only valid keys in the zarr table. Valid keys are
 those which respect the following rules:
