@@ -309,6 +309,7 @@ class SQLiteStore(Store):
 
     @override
     async def set(self, key: str, value: Buffer) -> None:
+        self._check_writable()
         _validate_key(key)
         await self._execute_write(
             "INSERT OR REPLACE INTO zarr (k, v) VALUES (?, ?)", (key, value.to_bytes())

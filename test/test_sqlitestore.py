@@ -7,6 +7,8 @@ from zarr.abc.store import OffsetByteRequest, RangeByteRequest, SuffixByteReques
 from zarr_sqlite import SQLiteStore
 from zarr_sqlite.zarr_sqlite import _validate_key, _normalize_prefix
 
+from tempfile import NamedTemporaryFile
+
 
 def make_buffer(data: bytes, prototype: BufferPrototype | None = None) -> object:
     prototype = prototype or default_buffer_prototype()
@@ -17,9 +19,25 @@ async def collect(iterator):
     return [item async for item in iterator]
 
 
+async def get_as_bytes(s: SQLiteStore, key: str) -> bytes | None:
+    buf = await s.get(key, default_buffer_prototype())
+    if buf is None:
+        return None
+    return buf.to_bytes()
+
+
 @pytest.fixture
 def store():
     s = SQLiteStore(":memory:")
+    yield s
+    s.close()
+
+
+@pytest.fixture
+def tmpfile_store():
+    fp = NamedTemporaryFile(suffix=".db")
+    fp.close
+    s = SQLiteStore(fp.name)
     yield s
     s.close()
 
@@ -33,17 +51,9 @@ async def test_set_and_get(store):
 
 
 @pytest.mark.asyncio
-async def test_get_nonexistent_returns_none(store):
+async def test_get_nonexistent(store):
     buf = await store.get("missing", default_buffer_prototype())
     assert buf is None
-
-
-@pytest.mark.asyncio
-async def test_get_byte_range_none(store):
-    data = b"abcdefghij"
-    await store.set("k", make_buffer(data))
-    buf = await store.get("k", default_buffer_prototype(), byte_range=None)
-    assert buf.to_bytes() == data
 
 
 @pytest.mark.asyncio
@@ -80,14 +90,14 @@ async def test_get_range_byte_request(store):
 
 @pytest.mark.asyncio
 async def test_get_range_clamped(store):
-    data = b"abc"
+    data = b"abcdefghijkl"
     await store.set("k", make_buffer(data))
     buf = await store.get(
         "k",
         default_buffer_prototype(),
         byte_range=RangeByteRequest(start=-5, end=100),
     )
-    assert buf.to_bytes() == b"abc"
+    assert buf.to_bytes() == data
 
 
 @pytest.mark.asyncio
@@ -97,6 +107,7 @@ async def test_get_suffix_byte_request(store):
     buf = await store.get(
         "k", default_buffer_prototype(), byte_range=SuffixByteRequest(3)
     )
+    assert len(buf) == 3
     assert buf.to_bytes() == b"hij"
 
 
@@ -107,7 +118,7 @@ async def test_get_suffix_larger_than_length(store):
     buf = await store.get(
         "k", default_buffer_prototype(), byte_range=SuffixByteRequest(100)
     )
-    assert buf.to_bytes() == b"abc"
+    assert buf.to_bytes() == data
 
 
 @pytest.mark.asyncio
@@ -146,6 +157,9 @@ async def test_get_partial_values(store):
 @pytest.mark.asyncio
 async def test_set_overwrites(store):
     await store.set("k", make_buffer(b"first"))
+    buf = await store.get("k", default_buffer_prototype())
+    assert buf.to_bytes() == b"first"
+
     await store.set("k", make_buffer(b"second"))
     buf = await store.get("k", default_buffer_prototype())
     assert buf.to_bytes() == b"second"
@@ -233,9 +247,10 @@ async def test_list_dir_root(store):
     await store.set("a/1", make_buffer(b"1"))
     await store.set("b/2", make_buffer(b"2"))
     await store.set("c/d/3", make_buffer(b"3"))
+    await store.set("leaf", make_buffer(b"3"))
 
     entries = set(await collect(store.list_dir("")))
-    assert entries == {"a/", "b/", "c/"}
+    assert entries == {"a/", "b/", "c/", "leaf"}
 
 
 @pytest.mark.asyncio
@@ -245,14 +260,6 @@ async def test_list_dir_nested(store):
     await store.set("a/sub/z", make_buffer(b"3"))
     entries = set(await collect(store.list_dir("a/")))
     assert entries == {"x", "y", "sub/"}
-
-
-@pytest.mark.asyncio
-async def test_list_dir_returns_leaf_and_prefix(store):
-    await store.set("a/leaf", make_buffer(b"1"))
-    await store.set("a/group/child", make_buffer(b"2"))
-    entries = set(await collect(store.list_dir("a/")))
-    assert entries == {"leaf", "group/"}
 
 
 @pytest.mark.asyncio
@@ -283,8 +290,11 @@ async def test_exists(store):
 
 @pytest.mark.asyncio
 async def test_is_empty(store):
+    assert await store.is_empty("")
     assert await store.is_empty("a/")
+
     await store.set("a/b", make_buffer(b"1"))
+    assert not await store.is_empty("")
     assert not await store.is_empty("a/")
     assert await store.is_empty("c/")
 
@@ -293,7 +303,7 @@ async def test_is_empty(store):
 async def test_clear(store):
     await store.set("a", make_buffer(b"1"))
     await store.set("b/c", make_buffer(b"2"))
-    assert await collect(store.list())
+    assert len(await collect(store.list())) == 2
     await store.clear()
     assert await collect(store.list()) == []
 
@@ -336,14 +346,17 @@ def test_eq_same_path(tmp_path):
         s3.close()
 
 
-def test_with_read_only():
-    s = SQLiteStore(":memory:", read_only=False)
-    try:
-        ro = s.with_read_only(read_only=True)
-        assert ro._read_only is True
-        assert ro._is_open is False
-    finally:
-        s.close()
+@pytest.mark.asyncio
+async def test_with_read_only(tmpfile_store):
+    await tmpfile_store.set("a", make_buffer(b"data"))
+
+    ro = tmpfile_store.with_read_only(read_only=True)
+    assert ro.read_only is True
+
+    assert await get_as_bytes(ro, "a") == b"data"
+
+    with pytest.raises(ValueError):
+        await ro.set("b", make_buffer(b"data"))
 
 
 def test_validate_key_valid():
