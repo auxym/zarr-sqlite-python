@@ -107,10 +107,12 @@ class SQLiteStore(Store):
         *,
         read_only: bool = False,
         journal_mode: str | None = "WAL",
+        page_size: int = 16384
     ) -> None:
         super().__init__(read_only=read_only)
         self.database_uri = self._build_database_uri(database, read_only=read_only)
         self._journal_mode = journal_mode
+        self._page_size = page_size
 
     @staticmethod
     def _build_database_uri(database: Path | str, read_only: bool) -> str:
@@ -186,7 +188,7 @@ class SQLiteStore(Store):
                 self._con.autocommit = True
                 self._con.execute(f"PRAGMA journal_mode={self._journal_mode}")
                 self._con.autocommit = False
-            self._con.execute("PRAGMA page_size=16384")
+                self._con.execute(f"PRAGMA page_size={int(self._page_size)}")
             await self._create_schema()
         # TODO: If read-only, validate the schema?
         self._is_open = True
