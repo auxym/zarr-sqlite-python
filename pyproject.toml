@@ -26,6 +26,7 @@ dev = [
     "numpy>=2.3.2",
     "pytest>=8.4.1",
     "pytest-asyncio>=1.1.0",
+    "pytest-benchmark>=5.2.3",
 ]
 
 [tool.pytest.ini_options]
