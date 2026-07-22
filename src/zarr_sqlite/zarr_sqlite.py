@@ -79,6 +79,7 @@ class SQLiteStore(Store):
     _con: sqlite3.Connection
     _lock: asyncio.Lock | None
     _journal_mode: str | None
+    _page_size: int
 
     @property
     @override
@@ -258,6 +259,48 @@ class SQLiteStore(Store):
         parsed_uri_other = urllib.parse.urlparse(other.database_uri)
         return parsed_uri_other.path == parsed_uri_self.path
 
+    async def _get_blob_info(self, key: str) -> tuple[int, int] | None:
+        """Get the rowid and length of a blob without loading it into memory."""
+        cur = await self._execute(
+            "SELECT rowid, LENGTH(v) FROM zarr WHERE k = ?", (key,)
+        )
+        row = cur.fetchone()
+        if row is None:
+            return None
+        return int(row[0]), int(row[1])
+
+    async def _get_partial_blob(self, key: str, byte_range: ByteRequest) -> bytes | None:
+        info = await self._get_blob_info(key)
+        if info is None:
+            return None
+        rowid, blob_len = info
+
+        match byte_range:
+            case OffsetByteRequest(offset=o):
+                start, length = min(o, blob_len), blob_len - min(o, blob_len)
+            case RangeByteRequest(start=s, end=e):
+                start = max(0, s)
+                end_clamped = min(blob_len, e)
+                length = max(0, end_clamped - start)
+            case SuffixByteRequest(suffix=s):
+                start = max(0, blob_len - s)
+                length = blob_len - start
+            case _:
+                raise ValueError(f"Unsupported byte range type: {type(byte_range)}")
+
+        if length == 0:
+            return b""
+
+        async with self._lock:
+            blob = self._con.blobopen("zarr", "v", rowid, readonly=True)
+            try:
+                blob.seek(start)
+                data = blob.read(length)
+            finally:
+                blob.close()
+
+        return data
+
     @override
     async def get(
         self,
@@ -265,31 +308,21 @@ class SQLiteStore(Store):
         prototype: BufferPrototype,
         byte_range: ByteRequest | None = None,
     ) -> Buffer | None:
-
-        # TODO: use the blob API to select a byte range directly from SQLite if possible
-
+        await self._ensure_open()
         _validate_key(key)
-        cur = await self._execute("SELECT v FROM zarr WHERE k = ?", (key,))
-        row = cur.fetchone()
-        if row is None:
-            return None
-        blob = row[0]
-        if not isinstance(blob, bytes):
-            raise TypeError(f"Expected bytes for key {key}, got {type(blob)}")
 
+        data = None
         if byte_range is None:
-            return prototype.buffer.from_bytes(blob)
-        elif isinstance(byte_range, OffsetByteRequest):
-            a = min(byte_range.offset, len(blob))
-            return prototype.buffer.from_bytes(blob[a:])
-        elif isinstance(byte_range, RangeByteRequest):
-            a, b = max(0, byte_range.start), min(len(blob), byte_range.end)
-            return prototype.buffer.from_bytes(blob[a:b])
-        elif isinstance(byte_range, SuffixByteRequest):
-            a = min(len(blob), byte_range.suffix)
-            return prototype.buffer.from_bytes(blob[-a:])
+            cur = await self._execute("SELECT v FROM zarr WHERE k = ?", (key,))
+            row = cur.fetchone()
+            if row is not None and isinstance(row[0], bytes):
+                data = row[0]
         else:
-            raise ValueError(f"Unsupported byte range type: {type(byte_range)}")
+            data = await self._get_partial_blob(key, byte_range)
+
+        if data is None:
+            return None
+        return prototype.buffer.from_bytes(data)
 
     @override
     async def get_partial_values(

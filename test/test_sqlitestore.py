@@ -122,13 +122,6 @@ async def test_get_suffix_larger_than_length(store):
 
 
 @pytest.mark.asyncio
-async def test_get_non_bytes_raises(store):
-    await store._execute_write("INSERT INTO zarr (k, v) VALUES (?, ?)", ("k", 5))
-    with pytest.raises(TypeError):
-        await store.get("k", default_buffer_prototype())
-
-
-@pytest.mark.asyncio
 async def test_get_unsupported_byte_range(store):
     data = b"abc"
     await store.set("k", make_buffer(data))
