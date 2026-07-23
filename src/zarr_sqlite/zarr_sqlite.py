@@ -356,13 +356,6 @@ class SQLiteStore(Store):
     async def delete(self, key: str) -> None:
         await self._execute_write("DELETE FROM zarr WHERE k = ?", (key,))
 
-    # TODO: Implement partial writes with blob API
-    @override
-    async def set_partial_values(
-        self, key_start_values: Iterable[tuple[str, int, BytesLike]]
-    ) -> None:
-        raise NotImplementedError("Partial writes are not supported by SQLiteStore.")
-
     @override
     async def list(self) -> AsyncIterator[str]:
         cur = await self._execute("SELECT k FROM zarr")
