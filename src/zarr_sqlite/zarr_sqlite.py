@@ -259,21 +259,16 @@ class SQLiteStore(Store):
         parsed_uri_other = urllib.parse.urlparse(other.database_uri)
         return parsed_uri_other.path == parsed_uri_self.path
 
-    async def _get_blob_info(self, key: str) -> tuple[int, int] | None:
-        """Get the rowid and length of a blob without loading it into memory."""
+    async def _get_partial_blob(self, key: str, byte_range: ByteRequest) -> bytes | None:
         cur = await self._execute(
-            "SELECT rowid, LENGTH(v) FROM zarr WHERE k = ?", (key,)
+            "SELECT rowid FROM zarr WHERE k = ?", (key,)
         )
         row = cur.fetchone()
         if row is None:
             return None
-        return int(row[0]), int(row[1])
-
-    async def _get_partial_blob(self, key: str, byte_range: ByteRequest) -> bytes | None:
-        info = await self._get_blob_info(key)
-        if info is None:
-            return None
-        rowid, blob_len = info
+        rowid = row[0]
+        bh = self._con.blobopen("zarr", "v", rowid)
+        blob_len = len(bh)
 
         match byte_range:
             case OffsetByteRequest(offset=o):
