@@ -359,6 +359,24 @@ async def test_with_read_only(tmpfile_store):
         await ro.set("b", make_buffer(b"data"))
 
 
+@pytest.mark.asyncio
+async def test_read_only_raises(tmpfile_store):
+    await tmpfile_store.set("a", make_buffer(b"data"))
+    tmpfile_store.close()
+    store = SQLiteStore(tmpfile_store.database_uri, read_only=True)
+
+    with pytest.raises(ValueError):
+        await store.delete("a")
+    with pytest.raises(ValueError):
+        await store.set("b", make_buffer(b"data"))
+    with pytest.raises(ValueError):
+        await store.set_if_not_exists("b", make_buffer(b"data"))
+    with pytest.raises(ValueError):
+        await store.delete_dir("a/")
+    with pytest.raises(ValueError):
+        await store.clear()
+
+
 def test_validate_key_valid():
     for key in ["", "a", "a/b", "a/b/c.json", "0", "with-dash_and.dot"]:
         _validate_key(key)

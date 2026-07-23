@@ -235,6 +235,7 @@ class SQLiteStore(Store):
     @override
     async def clear(self) -> None:
         """Clear the store."""
+        self._check_writable()
         await self._execute_write("DROP TABLE IF EXISTS zarr")
         await self._create_schema()
 
@@ -317,6 +318,7 @@ class SQLiteStore(Store):
 
     @override
     async def set_if_not_exists(self, key: str, value: Buffer) -> None:
+        self._check_writable()
         _validate_key(key)
         await self._execute_write(
             "INSERT OR IGNORE INTO zarr (k, v) VALUES (?, ?)", (key, value.to_bytes())
@@ -324,6 +326,7 @@ class SQLiteStore(Store):
 
     @override
     async def delete(self, key: str) -> None:
+        self._check_writable()
         await self._execute_write("DELETE FROM zarr WHERE k = ?", (key,))
 
     # TODO: Implement partial writes with blob API
@@ -364,6 +367,7 @@ class SQLiteStore(Store):
 
     @override
     async def delete_dir(self, prefix: str) -> None:
+        self._check_writable()
         prefix = _normalize_prefix(prefix)
         if await self.exists(prefix.rstrip("/")):
             raise ValueError(
