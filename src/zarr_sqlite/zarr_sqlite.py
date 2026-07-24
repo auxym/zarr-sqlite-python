@@ -137,9 +137,8 @@ class SQLiteStore(Store):
             # In-memory databases cannot be opened in read-only mode
             if read_only:
                 raise ValueError("Cannot open an in-memory database in read-only mode.")
-            uri_path = "mem-" + str(
-                uuid.uuid4()
-            )  # Generate a unique ID for the in-memory database
+            # Generate a unique ID for the in-memory database
+            uri_path = "mem-" + str(uuid.uuid4())
             query["mode"] = ["memory"]
             query["cache"] = ["shared"]
         elif not database.startswith("file:"):
@@ -198,8 +197,7 @@ class SQLiteStore(Store):
     async def _execute_write(self, query: str, params: Sequence[object] = ()) -> None:
         """Execute a query with our lock and commit."""
         await self._ensure_open()
-        if self._lock is None:
-            raise ValueError("Store is not open")
+        assert self._lock is not None
         async with self._lock:
             cursor = self._con.cursor()
             _ = cursor.execute(query, params)
