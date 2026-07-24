@@ -20,3 +20,16 @@ test = [
 [build-system]
 requires = ["uv_build>=0.8.3,<0.9.0"]
 build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "numpy>=2.3.2",
+    "pytest>=8.4.1",
+    "pytest-asyncio>=1.1.0",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+markers = [
+    "asyncio: mark a test as an asyncio coroutine",
+]

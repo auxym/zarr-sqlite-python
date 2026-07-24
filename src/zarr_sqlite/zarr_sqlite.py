@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+from typing import override
+from collections.abc import Iterable, AsyncIterator, Sequence
 import asyncio
 import sqlite3
 from pathlib import Path
-from typing import TYPE_CHECKING, override, cast
 import urllib.parse
 import uuid
+
+from zarr.core.buffer import BufferPrototype, Buffer
+from zarr.core.common import BytesLike
 
 from zarr.abc.store import (
     ByteRequest,
@@ -14,13 +18,40 @@ from zarr.abc.store import (
     Store,
     SuffixByteRequest,
 )
-from zarr.core.buffer import Buffer
-from zarr.core.common import BytesLike
 
-if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Iterable, Sequence
 
-    from zarr.core.buffer import BufferPrototype
+def _validate_key(key: str):
+    """Validates a key according to SQLiteStore specification
+
+    From the Zarr core spec:
+    - a key is a Unicode string, where the final character is not a `/` character.
+
+    Additional checks (not in the core spec):
+    - a key which starts with '/' is invalid, and
+    - a key that contains '//' is invalid.
+
+    The empty string is a valid key: it addresses a store's root resource as a single blob.
+    """
+    is_valid = not (key.startswith("/") or key.endswith("/") or "//" in key)
+    if not is_valid:
+        raise ValueError(f"Invalid key '{key}'")
+
+
+def _normalize_prefix(prefix: str) -> str:
+    """Validate a prefix string and append trailing `/` if needed
+
+    Validation is identical to key validation, except that a prefix may end in a `/`
+    character. A trailing `/` is appended to prefix if absent.
+
+    The empty string is a valid prefix (root group). The string "/" is not a valid
+    prefix.
+    """
+    is_valid = not (prefix.startswith("/") or "//" in prefix)
+    if not is_valid:
+        raise ValueError(f"Invalid prefix '{prefix}'")
+    if prefix != "" and not prefix.endswith("/"):
+        prefix += "/"
+    return prefix
 
 
 class SQLiteStore(Store):
@@ -75,7 +106,7 @@ class SQLiteStore(Store):
         database: str | Path,
         *,
         read_only: bool = False,
-        journal_mode: str | None = 'WAL',
+        journal_mode: str | None = "WAL",
     ) -> None:
         super().__init__(read_only=read_only)
         self.database_uri = self._build_database_uri(database, read_only=read_only)
@@ -97,7 +128,7 @@ class SQLiteStore(Store):
         Ref: https://sqlite.org/uri.html
         """
 
-        query = {"mode": ["ro"] if read_only else ["rw"]}
+        query = {"mode": ["ro"] if read_only else ["rwc"]}
         uri_path = ""
 
         if isinstance(database, Path):
@@ -106,9 +137,8 @@ class SQLiteStore(Store):
             # In-memory databases cannot be opened in read-only mode
             if read_only:
                 raise ValueError("Cannot open an in-memory database in read-only mode.")
-            uri_path = "mem-" + str(
-                uuid.uuid4()
-            )  # Generate a unique ID for the in-memory database
+            # Generate a unique ID for the in-memory database
+            uri_path = "mem-" + str(uuid.uuid4())
             query["mode"] = ["memory"]
             query["cache"] = ["shared"]
         elif not database.startswith("file:"):
@@ -144,7 +174,13 @@ class SQLiteStore(Store):
         )
         if not self._read_only:
             if self._journal_mode is not None:
-                if self._journal_mode not in ["DELETE", "TRUNCATE", "PERSIST", "WAL", "OFF"]:
+                if self._journal_mode not in [
+                    "DELETE",
+                    "TRUNCATE",
+                    "PERSIST",
+                    "WAL",
+                    "OFF",
+                ]:
                     raise ValueError(f"Invalid journal_mode: {self._journal_mode}")
                 self._con.autocommit = True
                 self._con.execute(f"PRAGMA journal_mode={self._journal_mode}")
@@ -161,8 +197,7 @@ class SQLiteStore(Store):
     async def _execute_write(self, query: str, params: Sequence[object] = ()) -> None:
         """Execute a query with our lock and commit."""
         await self._ensure_open()
-        if self._lock is None:
-            raise ValueError("Store is not open")
+        assert self._lock is not None
         async with self._lock:
             cursor = self._con.cursor()
             _ = cursor.execute(query, params)
@@ -190,16 +225,15 @@ class SQLiteStore(Store):
 
     @override
     async def is_empty(self, prefix: str) -> bool:
-        if not prefix.endswith("/"):
-            prefix += "/"
-        cur = await self._execute(
-            "SELECT COUNT(*) FROM zarr WHERE k GLOB ?", (prefix + "/*",)
-        )
-        return cast(tuple[int], cur.fetchone())[0] == 0
+        prefix = _normalize_prefix(prefix)
+        glob = prefix + "*"
+        cur = await self._execute("SELECT COUNT(*) FROM zarr WHERE k GLOB ?", (glob,))
+        return cur.fetchone()[0] == 0
 
     @override
     async def clear(self) -> None:
         """Clear the store."""
+        self._check_writable()
         await self._execute_write("DROP TABLE IF EXISTS zarr")
         await self._create_schema()
 
@@ -228,9 +262,12 @@ class SQLiteStore(Store):
         prototype: BufferPrototype,
         byte_range: ByteRequest | None = None,
     ) -> Buffer | None:
+
         # TODO: use the blob API to select a byte range directly from SQLite if possible
+
+        _validate_key(key)
         cur = await self._execute("SELECT v FROM zarr WHERE k = ?", (key,))
-        row = cast(tuple[object] | None, cur.fetchone())
+        row = cur.fetchone()
         if row is None:
             return None
         blob = row[0]
@@ -248,6 +285,8 @@ class SQLiteStore(Store):
         elif isinstance(byte_range, SuffixByteRequest):
             a = min(len(blob), byte_range.suffix)
             return prototype.buffer.from_bytes(blob[-a:])
+        else:
+            raise ValueError(f"Unsupported byte range type: {type(byte_range)}")
 
     @override
     async def get_partial_values(
@@ -263,23 +302,29 @@ class SQLiteStore(Store):
 
     @override
     async def exists(self, key: str) -> bool:
+        _validate_key(key)
         cur = await self._execute("SELECT v FROM zarr WHERE k = ?", (key,))
         return cur.fetchone() is not None
 
     @override
     async def set(self, key: str, value: Buffer) -> None:
+        self._check_writable()
+        _validate_key(key)
         await self._execute_write(
             "INSERT OR REPLACE INTO zarr (k, v) VALUES (?, ?)", (key, value.to_bytes())
         )
 
     @override
     async def set_if_not_exists(self, key: str, value: Buffer) -> None:
+        self._check_writable()
+        _validate_key(key)
         await self._execute_write(
             "INSERT OR IGNORE INTO zarr (k, v) VALUES (?, ?)", (key, value.to_bytes())
         )
 
     @override
     async def delete(self, key: str) -> None:
+        self._check_writable()
         await self._execute_write("DELETE FROM zarr WHERE k = ?", (key,))
 
     # TODO: Implement partial writes with blob API
@@ -292,57 +337,61 @@ class SQLiteStore(Store):
     @override
     async def list(self) -> AsyncIterator[str]:
         cur = await self._execute("SELECT k FROM zarr")
-        for row in cast(Iterable[tuple[str]], cur):
-            yield row[0]
+        for row in cur:
+            yield str(row[0])
 
     @override
     async def list_prefix(self, prefix: str) -> AsyncIterator[str]:
-        if not prefix.endswith("/"):
-            prefix += "/"
-        cur = await self._execute("SELECT k FROM zarr WHERE k GLOB ?", (prefix + "*",))
-        for row in cast(Iterable[tuple[str]], cur):
-            yield row[0]
+        prefix = _normalize_prefix(prefix)
+        glob = prefix + "*"
+        cur = await self._execute("SELECT k FROM zarr WHERE k GLOB ?", (glob,))
+        for row in cur:
+            yield str(row[0])
 
     @override
     async def list_dir(self, prefix: str) -> AsyncIterator[str]:
+        prefix = _normalize_prefix(prefix)
         seen: set[str] = set()
         async for full_key in self.list_prefix(prefix):
-            relative_parts = full_key.removeprefix(prefix).split("/")
-            k = relative_parts[0]
-            if len(relative_parts) > 1:
-                k = k + "/"  # Is a prefix
+            rel_key = full_key.removeprefix(prefix)
+            parts = rel_key.split("/")
+            k = parts[0]
+            if len(parts) > 1:
+                # k is a prefix
+                k = k + "/"
             if k not in seen:
                 seen.add(k)
                 yield k
 
     @override
     async def delete_dir(self, prefix: str) -> None:
-        prefix = prefix.rstrip("/")
-        if await self.exists(prefix):
+        self._check_writable()
+        prefix = _normalize_prefix(prefix)
+        if await self.exists(prefix.rstrip("/")):
             raise ValueError(
                 f"Cannot delete directory {prefix} as it is a key in the store."
             )
-        else:
-            await self._execute_write(
-                "DELETE FROM zarr WHERE k GLOB ?", (prefix + "/*",)
-            )
+
+        glob = prefix + "*"
+        await self._execute_write("DELETE FROM zarr WHERE k GLOB ?", (glob,))
 
     @override
     async def getsize(self, key: str) -> int:
+        _validate_key(key)
         cur = await self._execute("SELECT LENGTH(v) FROM zarr WHERE k = ?", (key,))
-        row = cast(tuple[int] | None, cur.fetchone())
+        row = cur.fetchone()
         if row is None:
             raise FileNotFoundError(key)
-        return row[0]
+        return int(row[0])
 
     @override
     async def getsize_prefix(self, prefix: str) -> int:
-        if not prefix.endswith("/"):
-            prefix += "/"
+        prefix = _normalize_prefix(prefix)
+        glob = prefix + "*"
         cur = await self._execute(
-            "SELECT SUM(LENGTH(v)) FROM zarr WHERE k GLOB ?", (prefix + "*",)
+            "SELECT SUM(LENGTH(v)) FROM zarr WHERE k GLOB ?", (glob,)
         )
-        size = cast(tuple[int | None], cur.fetchone())[0]
-        if size is None:
-            size = 0
-        return size
+        size = cur.fetchone()
+        if size is None or size[0] is None:
+            return 0
+        return int(size[0])
