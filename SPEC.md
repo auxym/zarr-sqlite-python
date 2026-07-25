@@ -60,8 +60,6 @@ implementations of SQLiteStore may choose to support only some of these
 capabilities (for example, a read-only SQLiteStore implementation may support
 only Readable and Listable).
 
-## Canonical URI
-
 ## File format
 
 Zarr SQLiteStore files must conform to the on-disk SQLite file format used by
