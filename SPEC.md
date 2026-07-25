@@ -88,20 +88,20 @@ PRAGMA application_id = 0x10b50760
 
 ## Database schema
 
-SQLiteStore files must contain two tables, as described below. The value columns
-*v* must not contain NULL values and must therefore be specified with a
-`NOT NULL` constraint in the table schemas.
+SQLiteStore files must contain two tables, as described below. Records must not
+contain NULL values and the table schemas should therefore be specified with a
+`NOT NULL` constraint on each column.
 
 Implementations may satisfy this requirement by executing the following SQL
 statements:
 
 ```sql
 CREATE TABLE IF NOT EXISTS sqlitestore_metadata(
-  k TEXT PRIMARY KEY,
+  k TEXT PRIMARY KEY NOT NULL,
   v TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS zarr(
-  k TEXT PRIMARY KEY,
+  k TEXT PRIMARY KEY NOT NULL,
   v BLOB NOT NULL
 );
 ```
