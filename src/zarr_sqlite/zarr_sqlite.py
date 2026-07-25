@@ -9,7 +9,6 @@ import urllib.parse
 import uuid
 
 from zarr.core.buffer import BufferPrototype, Buffer
-from zarr.core.common import BytesLike
 
 from zarr.abc.store import (
     ByteRequest,
@@ -79,6 +78,7 @@ class SQLiteStore(Store):
     _con: sqlite3.Connection
     _lock: asyncio.Lock | None
     _journal_mode: str | None
+    _page_size: int
 
     @property
     @override
@@ -95,22 +95,18 @@ class SQLiteStore(Store):
     def supports_listing(self) -> bool:
         return True
 
-    @property
-    @override
-    def supports_partial_writes(self) -> bool:
-        # TODO: implement with blob API
-        return False
-
     def __init__(
         self,
         database: str | Path,
         *,
         read_only: bool = False,
         journal_mode: str | None = "WAL",
+        page_size: int = 4096
     ) -> None:
         super().__init__(read_only=read_only)
         self.database_uri = self._build_database_uri(database, read_only=read_only)
         self._journal_mode = journal_mode
+        self._page_size = page_size
 
     @staticmethod
     def _build_database_uri(database: Path | str, read_only: bool) -> str:
@@ -138,7 +134,7 @@ class SQLiteStore(Store):
             if read_only:
                 raise ValueError("Cannot open an in-memory database in read-only mode.")
             # Generate a unique ID for the in-memory database
-            uri_path = "mem-" + str(uuid.uuid4())
+            uri_path = "mem-" + str(uuid.uuid4()) 
             query["mode"] = ["memory"]
             query["cache"] = ["shared"]
         elif not database.startswith("file:"):
@@ -176,16 +172,13 @@ class SQLiteStore(Store):
             if self._journal_mode is not None:
                 if self._journal_mode not in [
                     "DELETE",
-                    "TRUNCATE",
-                    "PERSIST",
                     "WAL",
-                    "OFF",
                 ]:
                     raise ValueError(f"Invalid journal_mode: {self._journal_mode}")
                 self._con.autocommit = True
                 self._con.execute(f"PRAGMA journal_mode={self._journal_mode}")
                 self._con.autocommit = False
-            self._con.execute("PRAGMA page_size=16384")
+            self._con.execute(f"PRAGMA page_size={int(self._page_size)}")
             await self._create_schema()
         # TODO: If read-only, validate the schema?
         self._is_open = True
@@ -255,6 +248,42 @@ class SQLiteStore(Store):
         parsed_uri_other = urllib.parse.urlparse(other.database_uri)
         return parsed_uri_other.path == parsed_uri_self.path
 
+    async def _get_partial_blob(self, key: str, byte_range: ByteRequest) -> bytes | None:
+        cur = await self._execute(
+            "SELECT rowid FROM zarr WHERE k = ?", (key,)
+        )
+        row = cur.fetchone()
+        if row is None:
+            return None
+        rowid = row[0]
+
+        blob = self._con.blobopen("zarr", "v", rowid, readonly=True)
+        blob_len = len(blob)
+
+        match byte_range:
+            case OffsetByteRequest(offset=o):
+                start, length = min(o, blob_len), blob_len - min(o, blob_len)
+            case RangeByteRequest(start=s, end=e):
+                start = max(0, s)
+                end_clamped = min(blob_len, e)
+                length = max(0, end_clamped - start)
+            case SuffixByteRequest(suffix=s):
+                start = max(0, blob_len - s)
+                length = blob_len - start
+            case _:
+                raise ValueError(f"Unsupported byte range type: {type(byte_range)}")
+
+        if length == 0:
+            return b""
+
+        try:
+            blob.seek(start)
+            data = blob.read(length)
+        finally:
+            blob.close()
+
+        return data
+
     @override
     async def get(
         self,
@@ -262,31 +291,20 @@ class SQLiteStore(Store):
         prototype: BufferPrototype,
         byte_range: ByteRequest | None = None,
     ) -> Buffer | None:
-
-        # TODO: use the blob API to select a byte range directly from SQLite if possible
-
         _validate_key(key)
-        cur = await self._execute("SELECT v FROM zarr WHERE k = ?", (key,))
-        row = cur.fetchone()
-        if row is None:
-            return None
-        blob = row[0]
-        if not isinstance(blob, bytes):
-            raise TypeError(f"Expected bytes for key {key}, got {type(blob)}")
 
+        data = None
         if byte_range is None:
-            return prototype.buffer.from_bytes(blob)
-        elif isinstance(byte_range, OffsetByteRequest):
-            a = min(byte_range.offset, len(blob))
-            return prototype.buffer.from_bytes(blob[a:])
-        elif isinstance(byte_range, RangeByteRequest):
-            a, b = max(0, byte_range.start), min(len(blob), byte_range.end)
-            return prototype.buffer.from_bytes(blob[a:b])
-        elif isinstance(byte_range, SuffixByteRequest):
-            a = min(len(blob), byte_range.suffix)
-            return prototype.buffer.from_bytes(blob[-a:])
+            cur = await self._execute("SELECT v FROM zarr WHERE k = ?", (key,))
+            row = cur.fetchone()
+            if row is not None and isinstance(row[0], bytes):
+                data = row[0]
         else:
-            raise ValueError(f"Unsupported byte range type: {type(byte_range)}")
+            data = await self._get_partial_blob(key, byte_range)
+
+        if data is None:
+            return None
+        return prototype.buffer.from_bytes(data)
 
     @override
     async def get_partial_values(
@@ -326,13 +344,6 @@ class SQLiteStore(Store):
     async def delete(self, key: str) -> None:
         self._check_writable()
         await self._execute_write("DELETE FROM zarr WHERE k = ?", (key,))
-
-    # TODO: Implement partial writes with blob API
-    @override
-    async def set_partial_values(
-        self, key_start_values: Iterable[tuple[str, int, BytesLike]]
-    ) -> None:
-        raise NotImplementedError("Partial writes are not supported by SQLiteStore.")
 
     @override
     async def list(self) -> AsyncIterator[str]:

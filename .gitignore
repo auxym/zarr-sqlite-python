@@ -15,3 +15,9 @@ wheels/
 # Editor and IDE files
 .vscode/
 .idea/
+
+# Database files used in tests and benchmarks
+*.db
+*.zarrdb
+*.sqlite
+.benchmarks
