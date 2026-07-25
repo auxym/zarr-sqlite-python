@@ -214,10 +214,11 @@ class SQLiteStore(Store):
     async def _create_schema(self) -> None:
         await self._execute_write(
             "CREATE TABLE IF NOT EXISTS sqlitestore_metadata("
-            "k TEXT PRIMARY KEY, v TEXT NOT NULL)"
+            "k TEXT PRIMARY KEY NOT NULL, v TEXT NOT NULL)"
         )
         await self._execute_write(
-            "CREATE TABLE IF NOT EXISTS zarr(k TEXT PRIMARY KEY, v BLOB NOT NULL)"
+            "CREATE TABLE IF NOT EXISTS zarr("
+            "k TEXT PRIMARY KEY NOT NULL, v BLOB NOT NULL)"
         )
         await self._execute_write(
             f"PRAGMA application_id = {_SQLITESTORE_APPLICATION_ID}"
