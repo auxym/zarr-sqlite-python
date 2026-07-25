@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import override
 from collections.abc import Iterable, AsyncIterator, Sequence
 import asyncio
+import datetime
 import sqlite3
 from pathlib import Path
 import urllib.parse
@@ -17,6 +18,10 @@ from zarr.abc.store import (
     Store,
     SuffixByteRequest,
 )
+
+_SQLITESTORE_VERSION = "1.0"
+_SQLITESTORE_APPLICATION_ID = 0x10B50760
+_CREATED_BY = "zarr-sqlite"
 
 
 def _validate_key(key: str):
@@ -101,7 +106,7 @@ class SQLiteStore(Store):
         *,
         read_only: bool = False,
         journal_mode: str | None = "WAL",
-        page_size: int = 4096
+        page_size: int = 4096,
     ) -> None:
         super().__init__(read_only=read_only)
         self.database_uri = self._build_database_uri(database, read_only=read_only)
@@ -134,7 +139,7 @@ class SQLiteStore(Store):
             if read_only:
                 raise ValueError("Cannot open an in-memory database in read-only mode.")
             # Generate a unique ID for the in-memory database
-            uri_path = "mem-" + str(uuid.uuid4()) 
+            uri_path = "mem-" + str(uuid.uuid4())
             query["mode"] = ["memory"]
             query["cache"] = ["shared"]
         elif not database.startswith("file:"):
@@ -180,7 +185,9 @@ class SQLiteStore(Store):
                 self._con.autocommit = False
             self._con.execute(f"PRAGMA page_size={int(self._page_size)}")
             await self._create_schema()
-        # TODO: If read-only, validate the schema?
+            await self._validate_schema()
+        else:
+            await self._validate_schema()
         self._is_open = True
 
     @override
@@ -206,12 +213,108 @@ class SQLiteStore(Store):
 
     async def _create_schema(self) -> None:
         await self._execute_write(
-            "CREATE TABLE IF NOT EXISTS zarr(k TEXT PRIMARY KEY, v BLOB)"
+            "CREATE TABLE IF NOT EXISTS sqlitestore_metadata("
+            "k TEXT PRIMARY KEY, v TEXT NOT NULL)"
         )
+        await self._execute_write(
+            "CREATE TABLE IF NOT EXISTS zarr(k TEXT PRIMARY KEY, v BLOB NOT NULL)"
+        )
+        await self._execute_write(
+            f"PRAGMA application_id = {_SQLITESTORE_APPLICATION_ID}"
+        )
+        await self._execute_write(
+            "INSERT OR IGNORE INTO sqlitestore_metadata(k, v) VALUES (?, ?)",
+            ("sqlitestore_version", _SQLITESTORE_VERSION),
+        )
+        await self._execute_write(
+            "INSERT OR IGNORE INTO sqlitestore_metadata(k, v) VALUES (?, ?)",
+            ("compatible_flags", ""),
+        )
+        await self._execute_write(
+            "INSERT OR IGNORE INTO sqlitestore_metadata(k, v) VALUES (?, ?)",
+            ("incompatible_flags", ""),
+        )
+        await self._execute_write(
+            "INSERT OR IGNORE INTO sqlitestore_metadata(k, v) VALUES (?, ?)",
+            ("created_by", _CREATED_BY),
+        )
+        await self._execute_write(
+            "INSERT OR IGNORE INTO sqlitestore_metadata(k, v) VALUES (?, ?)",
+            (
+                "created_time",
+                datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            ),
+        )
+
+    async def _validate_schema(self) -> None:
+        cur = await self._execute("PRAGMA table_info(zarr)")
+        rows = cur.fetchall()
+        if not rows:
+            raise ValueError("Missing required table 'zarr'")
+        for row in rows:
+            if row[1] == "v" and row[3] != 1:
+                raise ValueError(
+                    "Column 'v' in table 'zarr' must have NOT NULL constraint"
+                )
+
+        cur = await self._execute("PRAGMA table_info(sqlitestore_metadata)")
+        rows = cur.fetchall()
+        if not rows:
+            raise ValueError("Missing required table 'sqlitestore_metadata'")
+        for row in rows:
+            if row[1] == "v" and row[3] != 1:
+                raise ValueError(
+                    "Column 'v' in table 'sqlitestore_metadata' "
+                    "must have NOT NULL constraint"
+                )
+
+        cur = await self._execute("PRAGMA application_id")
+        row = cur.fetchone()
+        if row is None or row[0] != _SQLITESTORE_APPLICATION_ID:
+            raise ValueError("Invalid application_id")
+
+        for key in (
+            "sqlitestore_version",
+            "compatible_flags",
+            "incompatible_flags",
+        ):
+            cur = await self._execute(
+                "SELECT v FROM sqlitestore_metadata WHERE k = ?", (key,)
+            )
+            if cur.fetchone() is None:
+                raise ValueError(f"Missing required metadata record '{key}'")
+
+        cur = await self._execute(
+            "SELECT v FROM sqlitestore_metadata WHERE k = ?",
+            ("sqlitestore_version",),
+        )
+        version_str = cur.fetchone()[0]
+        try:
+            major_str, _ = version_str.split(".", 1)
+            major = int(major_str)
+        except (ValueError, AttributeError):
+            raise ValueError(f"Invalid sqlitestore_version: {version_str}")
+        if major != 1:
+            raise ValueError(f"Unsupported SQLiteStore major version: {major}")
+
+        cur = await self._execute(
+            "SELECT v FROM sqlitestore_metadata WHERE k = ?",
+            ("incompatible_flags",),
+        )
+        incompatible_flags = cur.fetchone()[0]
+        if incompatible_flags:
+            for flag in incompatible_flags.split(","):
+                if flag:
+                    raise ValueError(f"Unknown incompatible flag: {flag}")
 
     @override
     def close(self) -> None:
         if self._is_open:
+            if not self._read_only and self._journal_mode == "WAL":
+                try:
+                    self._con.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                except sqlite3.OperationalError:
+                    pass
             super().close()
             self._con.close()
             self._lock = None
@@ -248,10 +351,10 @@ class SQLiteStore(Store):
         parsed_uri_other = urllib.parse.urlparse(other.database_uri)
         return parsed_uri_other.path == parsed_uri_self.path
 
-    async def _get_partial_blob(self, key: str, byte_range: ByteRequest) -> bytes | None:
-        cur = await self._execute(
-            "SELECT rowid FROM zarr WHERE k = ?", (key,)
-        )
+    async def _get_partial_blob(
+        self, key: str, byte_range: ByteRequest
+    ) -> bytes | None:
+        cur = await self._execute("SELECT rowid FROM zarr WHERE k = ?", (key,))
         row = cur.fetchone()
         if row is None:
             return None
