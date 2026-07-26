@@ -168,27 +168,14 @@ class SQLiteStore(Store):
                 "SQLiteStore requires sqlite3 to be compiled with threadsafety=3 (serialized mode)."
             )
 
-        await super()._open()
         self._lock = asyncio.Lock()
+        await super()._open()
         self._con = sqlite3.connect(
             self.database_uri, uri=True, autocommit=False, check_same_thread=False
         )
         if not self._read_only:
-            if self._journal_mode is not None:
-                if self._journal_mode not in [
-                    "DELETE",
-                    "WAL",
-                ]:
-                    raise ValueError(f"Invalid journal_mode: {self._journal_mode}")
-                self._con.autocommit = True
-                self._con.execute(f"PRAGMA journal_mode={self._journal_mode}")
-                self._con.autocommit = False
-            self._con.execute(f"PRAGMA page_size={int(self._page_size)}")
             await self._create_schema()
-            await self._validate_schema()
-        else:
-            await self._validate_schema()
-        self._is_open = True
+        await self._validate_schema()
 
     @override
     def with_read_only(self, read_only: bool = False) -> SQLiteStore:
@@ -222,7 +209,36 @@ class SQLiteStore(Store):
         cur = self._con.cursor()
         return cur.execute(query, params)
 
+    async def _set_journal(self) -> None:
+        if self._journal_mode is None:
+            # None = don't attempt to change journal mode
+            # Keep either the existing setting or the SQLite default
+            return
+
+        if self._journal_mode not in {
+            "DELETE",
+            "WAL",
+        }:
+            raise ValueError(f"Invalid journal_mode: {self._journal_mode}")
+
+        self._con.autocommit = True
+        self._con.execute(f"PRAGMA journal_mode={self._journal_mode}")
+        self._con.autocommit = False
+
+    async def _update_timestamp(self) -> None:
+        now = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+        await self._execute_write(
+            "INSERT INTO sqlitestore_metadata(k, v) VALUES (?, ?) "
+            "ON CONFLICT(k) DO UPDATE SET v = excluded.v",
+            ("created_time", now),
+        )
+
     async def _create_schema(self) -> None:
+        await self._set_journal()
+
+        # Note: setting page size has no effect unless the db is empty
+        self._con.execute(f"PRAGMA page_size={int(self._page_size)}")
+
         await self._execute_write(
             "CREATE TABLE IF NOT EXISTS sqlitestore_metadata("
             "k TEXT PRIMARY KEY NOT NULL, v TEXT NOT NULL)"
@@ -241,12 +257,9 @@ class SQLiteStore(Store):
                 ("compatible_flags", ""),
                 ("incompatible_flags", ""),
                 ("created_by", _CREATED_BY),
-                (
-                    "created_time",
-                    datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                ),
             ],
         )
+        await self._update_timestamp()
 
     async def _validate_schema(self) -> None:
         for required_table in ("zarr", "sqlitestore_metadata"):
@@ -293,15 +306,21 @@ class SQLiteStore(Store):
 
     @override
     def close(self) -> None:
-        if self._is_open:
-            if not self._read_only and self._journal_mode == "WAL":
-                try:
+        if not self._is_open:
+            return
+
+        if not self._read_only:
+            try:
+                # TODO: Update timestamp on close (sync)
+                #await self._update_timestamp()
+                if self._journal_mode == "WAL":
                     self._con.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-                except sqlite3.OperationalError:
-                    pass
-            super().close()
-            self._con.close()
-            self._lock = None
+            except Exception:
+                pass
+
+        super().close()
+        self._con.close()
+        self._lock = None
 
     @override
     async def is_empty(self, prefix: str) -> bool:
