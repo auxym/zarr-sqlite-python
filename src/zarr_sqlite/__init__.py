@@ -1,3 +1,5 @@
 from .zarr_sqlite import SQLiteStore
 
-__all__ = ["SQLiteStore"]
+from ._version import __version__
+
+__all__ = ["__version__", "SQLiteStore"]

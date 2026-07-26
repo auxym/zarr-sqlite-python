@@ -19,9 +19,11 @@ from zarr.abc.store import (
     SuffixByteRequest,
 )
 
-_SQLITESTORE_VERSION = "1.0"
+from ._version import __version__
+
+_SQLITESTORE_SPEC_VERSION = "1.0" # spec version we adhere to
 _SQLITESTORE_APPLICATION_ID = 0x10B50760
-_CREATED_BY = "zarr-sqlite"
+_CREATED_BY = f"zarr-sqlite-python v{__version__}"
 
 
 def _validate_key(key: str):
@@ -253,7 +255,7 @@ class SQLiteStore(Store):
         await self._execute_write_many(
             "INSERT OR IGNORE INTO sqlitestore_metadata(k, v) VALUES (?, ?)",
             [
-                ("sqlitestore_version", _SQLITESTORE_VERSION),
+                ("sqlitestore_version", _SQLITESTORE_SPEC_VERSION),
                 ("compatible_flags", ""),
                 ("incompatible_flags", ""),
                 ("created_by", _CREATED_BY),
