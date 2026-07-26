@@ -203,6 +203,17 @@ class SQLiteStore(Store):
             _ = cursor.execute(query, params)
             self._con.commit()
 
+    async def _execute_write_many(
+        self, query: str, params: Iterable[Sequence[object]] = ()
+    ) -> None:
+        """Execute a query with many parameter sets, with our lock and commit."""
+        await self._ensure_open()
+        assert self._lock is not None
+        async with self._lock:
+            cursor = self._con.cursor()
+            _ = cursor.executemany(query, params)
+            self._con.commit()
+
     async def _execute(
         self, query: str, params: Sequence[object] = ()
     ) -> sqlite3.Cursor:
@@ -223,90 +234,62 @@ class SQLiteStore(Store):
         await self._execute_write(
             f"PRAGMA application_id = {_SQLITESTORE_APPLICATION_ID}"
         )
-        await self._execute_write(
+        await self._execute_write_many(
             "INSERT OR IGNORE INTO sqlitestore_metadata(k, v) VALUES (?, ?)",
-            ("sqlitestore_version", _SQLITESTORE_VERSION),
-        )
-        await self._execute_write(
-            "INSERT OR IGNORE INTO sqlitestore_metadata(k, v) VALUES (?, ?)",
-            ("compatible_flags", ""),
-        )
-        await self._execute_write(
-            "INSERT OR IGNORE INTO sqlitestore_metadata(k, v) VALUES (?, ?)",
-            ("incompatible_flags", ""),
-        )
-        await self._execute_write(
-            "INSERT OR IGNORE INTO sqlitestore_metadata(k, v) VALUES (?, ?)",
-            ("created_by", _CREATED_BY),
-        )
-        await self._execute_write(
-            "INSERT OR IGNORE INTO sqlitestore_metadata(k, v) VALUES (?, ?)",
-            (
-                "created_time",
-                datetime.datetime.now(datetime.timezone.utc).isoformat(),
-            ),
+            [
+                ("sqlitestore_version", _SQLITESTORE_VERSION),
+                ("compatible_flags", ""),
+                ("incompatible_flags", ""),
+                ("created_by", _CREATED_BY),
+                (
+                    "created_time",
+                    datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                ),
+            ],
         )
 
     async def _validate_schema(self) -> None:
-        cur = await self._execute("PRAGMA table_info(zarr)")
-        rows = cur.fetchall()
-        if not rows:
-            raise ValueError("Missing required table 'zarr'")
-        for row in rows:
-            if row[1] == "v" and row[3] != 1:
+        for required_table in ("zarr", "sqlitestore_metadata"):
+            cur = await self._execute(f"PRAGMA table_info({required_table})")
+            rows = cur.fetchall()
+            if not rows:
                 raise ValueError(
-                    "Column 'v' in table 'zarr' must have NOT NULL constraint"
+                    f"Invalid SQLiteStore file: missing required table '{required_table}'"
                 )
 
-        cur = await self._execute("PRAGMA table_info(sqlitestore_metadata)")
-        rows = cur.fetchall()
-        if not rows:
-            raise ValueError("Missing required table 'sqlitestore_metadata'")
-        for row in rows:
-            if row[1] == "v" and row[3] != 1:
-                raise ValueError(
-                    "Column 'v' in table 'sqlitestore_metadata' "
-                    "must have NOT NULL constraint"
-                )
-
-        cur = await self._execute("PRAGMA application_id")
-        row = cur.fetchone()
-        if row is None or row[0] != _SQLITESTORE_APPLICATION_ID:
-            raise ValueError("Invalid application_id")
-
-        for key in (
+        metadata_keys = (
             "sqlitestore_version",
             "compatible_flags",
             "incompatible_flags",
-        ):
-            cur = await self._execute(
-                "SELECT v FROM sqlitestore_metadata WHERE k = ?", (key,)
-            )
-            if cur.fetchone() is None:
-                raise ValueError(f"Missing required metadata record '{key}'")
-
-        cur = await self._execute(
-            "SELECT v FROM sqlitestore_metadata WHERE k = ?",
-            ("sqlitestore_version",),
         )
-        version_str = cur.fetchone()[0]
+        cur = await self._execute(
+            "SELECT k, v FROM sqlitestore_metadata WHERE k IN (?, ?, ?)", metadata_keys
+        )
+        metadata = dict(cur.fetchall())
+        for k in metadata_keys:
+            if k not in metadata:
+                raise ValueError(
+                    f"Invalid SQLiteStore file: missing required metadata entry '{k}'"
+                )
+
+        # Check schema version
         try:
-            major_str, _ = version_str.split(".", 1)
-            major = int(major_str)
-        except (ValueError, AttributeError):
-            raise ValueError(f"Invalid sqlitestore_version: {version_str}")
-        if major != 1:
-            raise ValueError(f"Unsupported SQLiteStore major version: {major}")
+            version_str = metadata["sqlitestore_version"]
+            version = [int(n) for n in version_str.strip().split(".")]
+        except Exception:
+            raise ValueError(f"Invalid sqlitestore_version string: '{version_str}'")
+        if len(version) > 2:
+            raise ValueError(f"Invalid sqlitestore_version string: '{version_str}'")
+        if version[0] > 1:
+            # Major version is greater than what we support
+            raise ValueError(f"Unsupported sqlitestore_version: {version_str}")
 
-        cur = await self._execute(
-            "SELECT v FROM sqlitestore_metadata WHERE k = ?",
-            ("incompatible_flags",),
-        )
-        incompatible_flags = cur.fetchone()[0]
-        if incompatible_flags:
-            for flag in incompatible_flags.split(","):
-                if flag:
-                    raise ValueError(f"Unknown incompatible flag: {flag}")
+        incompat_flags = [
+            f.strip() for f in metadata["incompatible_flags"] if len(f.strip()) > 0
+        ]
+        # We don't know about any flags
+        if len(incompat_flags) > 0:
+            raise ValueError(f"SQLiteStore flag '{incompat_flags[0]}' is not supported")
 
     @override
     def close(self) -> None:
