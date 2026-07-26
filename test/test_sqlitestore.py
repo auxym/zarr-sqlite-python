@@ -1,11 +1,19 @@
 """Unit tests for the public API of SQLiteStore."""
 
+import datetime
+import sqlite3
+
 import pytest
 from zarr.core.buffer import BufferPrototype, default_buffer_prototype
 from zarr.abc.store import OffsetByteRequest, RangeByteRequest, SuffixByteRequest
 
 from zarr_sqlite import SQLiteStore
-from zarr_sqlite.zarr_sqlite import _validate_key, _normalize_prefix
+from zarr_sqlite.zarr_sqlite import (
+    _validate_key,
+    _normalize_prefix,
+    _SQLITESTORE_SPEC_VERSION,
+    _SQLITESTORE_APPLICATION_ID,
+)
 
 from tempfile import NamedTemporaryFile
 
@@ -411,3 +419,200 @@ def test_normalize_prefix_valid_unchanged():
 
     with pytest.raises(ValueError):
         _normalize_prefix("/")
+
+
+# ---------------------------------------------------------------------------
+# Schema creation tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_schema_tables_exist(store):
+    """Both required tables are created on first use."""
+    await store.set("key", make_buffer(b"data"))
+    con = store._con
+    cur = con.execute("SELECT name FROM sqlite_master WHERE type='table'")
+    tables = {row[0] for row in cur.fetchall()}
+    assert "zarr" in tables
+    assert "sqlitestore_metadata" in tables
+
+
+@pytest.mark.asyncio
+async def test_schema_not_null_constraints(store):
+    """Both k and v columns in both tables have NOT NULL."""
+    await store.set("key", make_buffer(b"data"))
+    con = store._con
+    for table in ("zarr", "sqlitestore_metadata"):
+        cur = con.execute(f"PRAGMA table_info({table})")
+        for row in cur.fetchall():
+            assert row[3] == 1, (
+                f"Column '{row[1]}' in table '{table}' must have NOT NULL"
+            )
+
+
+@pytest.mark.asyncio
+async def test_schema_application_id(store):
+    """application_id is set to the spec value."""
+    await store.set("key", make_buffer(b"data"))
+    con = store._con
+    cur = con.execute("PRAGMA application_id")
+    assert cur.fetchone()[0] == _SQLITESTORE_APPLICATION_ID
+
+
+@pytest.mark.asyncio
+async def test_metadata_required_records(store):
+    """All required metadata records exist with correct values."""
+    await store.set("key", make_buffer(b"data"))
+    con = store._con
+    cur = con.execute("SELECT k, v FROM sqlitestore_metadata")
+    metadata = dict(cur.fetchall())
+    assert metadata["sqlitestore_version"] == _SQLITESTORE_SPEC_VERSION
+    assert metadata["compatible_flags"] == ""
+    assert metadata["incompatible_flags"] == ""
+    assert "created_by" in metadata
+    assert "created_time" in metadata
+
+
+@pytest.mark.asyncio
+async def test_metadata_created_by(store):
+    """created_by contains the package name."""
+    await store.set("key", make_buffer(b"data"))
+    con = store._con
+    cur = con.execute("SELECT v FROM sqlitestore_metadata WHERE k = 'created_by'")
+    created_by = cur.fetchone()[0]
+    assert created_by.startswith("zarr-sqlite-python")
+
+
+@pytest.mark.asyncio
+async def test_metadata_created_time(store):
+    """created_time is a valid ISO 8601 timestamp."""
+    await store.set("key", make_buffer(b"data"))
+    con = store._con
+    cur = con.execute("SELECT v FROM sqlitestore_metadata WHERE k = 'created_time'")
+    created_time = cur.fetchone()[0]
+    datetime.datetime.fromisoformat(created_time)
+
+
+# ---------------------------------------------------------------------------
+# Schema validation tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_validate_missing_zarr_table(tmpfile_store):
+    """Opening a file without the zarr table should fail."""
+    await tmpfile_store.set("key", make_buffer(b"data"))
+    tmpfile_store.close()
+
+    con = sqlite3.connect(tmpfile_store.database_uri, uri=True)
+    con.execute("DROP TABLE zarr")
+    con.commit()
+    con.close()
+
+    store = SQLiteStore(tmpfile_store.database_uri, read_only=True)
+    with pytest.raises(ValueError, match="missing required table 'zarr'"):
+        await store.exists("key")
+
+
+@pytest.mark.asyncio
+async def test_validate_missing_metadata_table(tmpfile_store):
+    """Opening a file without sqlitestore_metadata should fail."""
+    await tmpfile_store.set("key", make_buffer(b"data"))
+    tmpfile_store.close()
+
+    con = sqlite3.connect(tmpfile_store.database_uri, uri=True)
+    con.execute("DROP TABLE sqlitestore_metadata")
+    con.commit()
+    con.close()
+
+    store = SQLiteStore(tmpfile_store.database_uri, read_only=True)
+    with pytest.raises(
+        ValueError, match="missing required table 'sqlitestore_metadata'"
+    ):
+        await store.exists("key")
+
+
+@pytest.mark.asyncio
+async def test_validate_missing_metadata_record(tmpfile_store):
+    """Opening a file with a missing required metadata record should fail."""
+    await tmpfile_store.set("key", make_buffer(b"data"))
+    tmpfile_store.close()
+
+    con = sqlite3.connect(tmpfile_store.database_uri, uri=True)
+    con.execute("DELETE FROM sqlitestore_metadata WHERE k = 'sqlitestore_version'")
+    con.commit()
+    con.close()
+
+    store = SQLiteStore(tmpfile_store.database_uri, read_only=True)
+    with pytest.raises(
+        ValueError, match="missing required metadata entry 'sqlitestore_version'"
+    ):
+        await store.exists("key")
+
+
+@pytest.mark.asyncio
+async def test_validate_invalid_version(tmpfile_store):
+    """Opening a file with an invalid version string should fail."""
+    await tmpfile_store.set("key", make_buffer(b"data"))
+    tmpfile_store.close()
+
+    con = sqlite3.connect(tmpfile_store.database_uri, uri=True)
+    con.execute(
+        "UPDATE sqlitestore_metadata SET v = 'invalid' WHERE k = 'sqlitestore_version'"
+    )
+    con.commit()
+    con.close()
+
+    store = SQLiteStore(tmpfile_store.database_uri, read_only=True)
+    with pytest.raises(ValueError, match="Invalid sqlitestore_version"):
+        await store.exists("key")
+
+
+@pytest.mark.asyncio
+async def test_validate_unsupported_major_version(tmpfile_store):
+    """Opening a file with an unsupported major version should fail."""
+    await tmpfile_store.set("key", make_buffer(b"data"))
+    tmpfile_store.close()
+
+    con = sqlite3.connect(tmpfile_store.database_uri, uri=True)
+    con.execute(
+        "UPDATE sqlitestore_metadata SET v = '2.0' WHERE k = 'sqlitestore_version'"
+    )
+    con.commit()
+    con.close()
+
+    store = SQLiteStore(tmpfile_store.database_uri, read_only=True)
+    with pytest.raises(ValueError, match="Unsupported sqlitestore_version"):
+        await store.exists("key")
+
+
+@pytest.mark.asyncio
+async def test_validate_unknown_incompatible_flag(tmpfile_store):
+    """Opening a file with an unknown incompatible flag should fail."""
+    await tmpfile_store.set("key", make_buffer(b"data"))
+    tmpfile_store.close()
+
+    con = sqlite3.connect(tmpfile_store.database_uri, uri=True)
+    con.execute(
+        "UPDATE sqlitestore_metadata SET v = 'unknown_flag' "
+        "WHERE k = 'incompatible_flags'"
+    )
+    con.commit()
+    con.close()
+
+    store = SQLiteStore(tmpfile_store.database_uri, read_only=True)
+    with pytest.raises(
+        ValueError, match="SQLiteStore flag 'unknown_flag' is not supported"
+    ):
+        await store.exists("key")
+
+
+@pytest.mark.asyncio
+async def test_read_only_valid_file(tmpfile_store):
+    """A valid file can be opened in read-only mode."""
+    await tmpfile_store.set("key", make_buffer(b"data"))
+    tmpfile_store.close()
+
+    store = SQLiteStore(tmpfile_store.database_uri, read_only=True)
+    assert await get_as_bytes(store, "key") == b"data"
+    store.close()

@@ -21,7 +21,7 @@ from zarr.abc.store import (
 
 from ._version import __version__
 
-_SQLITESTORE_SPEC_VERSION = "1.0" # spec version we adhere to
+_SQLITESTORE_SPEC_VERSION = "1.0"  # spec version we adhere to
 _SQLITESTORE_APPLICATION_ID = 0x10B50760
 _CREATED_BY = f"zarr-sqlite-python v{__version__}"
 
@@ -300,7 +300,9 @@ class SQLiteStore(Store):
             raise ValueError(f"Unsupported sqlitestore_version: {version_str}")
 
         incompat_flags = [
-            f.strip() for f in metadata["incompatible_flags"] if len(f.strip()) > 0
+            f.strip()
+            for f in metadata["incompatible_flags"].split(",")
+            if len(f.strip()) > 0
         ]
         # We don't know about any flags
         if len(incompat_flags) > 0:
@@ -314,7 +316,7 @@ class SQLiteStore(Store):
         if not self._read_only:
             try:
                 # TODO: Update timestamp on close (sync)
-                #await self._update_timestamp()
+                # await self._update_timestamp()
                 if self._journal_mode == "WAL":
                     self._con.execute("PRAGMA wal_checkpoint(TRUNCATE)")
             except Exception:
