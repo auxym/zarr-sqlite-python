@@ -485,12 +485,13 @@ async def test_metadata_created_by(store):
 
 @pytest.mark.asyncio
 async def test_metadata_created_time(store):
-    """created_time is a valid ISO 8601 timestamp."""
+    """created_time is a valid ISO 8601 timestamp within the last 5 minutes."""
     await store.set("key", make_buffer(b"data"))
     con = store._con
     cur = con.execute("SELECT v FROM sqlitestore_metadata WHERE k = 'created_time'")
-    created_time = cur.fetchone()[0]
-    datetime.datetime.fromisoformat(created_time)
+    created_time = datetime.datetime.fromisoformat(cur.fetchone()[0])
+    now = datetime.datetime.now(datetime.timezone.utc)
+    assert now - datetime.timedelta(minutes=5) <= created_time <= now
 
 
 # ---------------------------------------------------------------------------
