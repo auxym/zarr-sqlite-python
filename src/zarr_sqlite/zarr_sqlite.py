@@ -1,3 +1,4 @@
+from typing import final
 from typing import override, Self
 from collections.abc import Iterable, AsyncIterator
 import datetime
@@ -276,10 +277,14 @@ class SQLiteStore(Store):
 
     @override
     def close(self) -> None:
-        if self._pool is not None:
+        if not self._is_open:
+            return
+
+        try:
             self._pool.close()
+        finally:
             self._pool = None
-        super().close()
+            self._is_open = False
 
     @override
     async def is_empty(self, prefix: str) -> bool:
