@@ -402,11 +402,9 @@ class SQLiteStore(Store):
         prototype: BufferPrototype,
         key_ranges: Iterable[tuple[str, ByteRequest | None]],
     ) -> list[Buffer | None]:
-        result: list[Buffer | None] = []
-        for key, byte_range in key_ranges:
-            buffer = await self.get(key, prototype, byte_range)
-            result.append(buffer)
-        return result
+        return await asyncio.gather(
+            [self.get(key, prototype, byte_range) for key, byte_range in key_ranges]
+        )
 
     @override
     async def exists(self, key: str) -> bool:
