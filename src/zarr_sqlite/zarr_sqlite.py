@@ -193,9 +193,11 @@ class SQLiteStore(Store):
         if self._journal_mode is not None:
             if self._journal_mode not in {"DELETE", "WAL"}:
                 raise ValueError(f"Invalid journal_mode: {self._journal_mode}")
-            conn.autocommit = True
-            await conn.execute("PRAGMA journal_mode=" + self._journal_mode)
-            conn.autocommit = False
+            try:
+                conn.autocommit = True
+                await conn.execute("PRAGMA journal_mode=" + self._journal_mode)
+            finally:
+                conn.autocommit = False
 
         await conn.execute("PRAGMA page_size=" + str(int(self._page_size)))
         await conn.execute(
@@ -206,7 +208,9 @@ class SQLiteStore(Store):
             "CREATE TABLE IF NOT EXISTS zarr("
             "k TEXT PRIMARY KEY NOT NULL, v BLOB NOT NULL)"
         )
-        await conn.execute("PRAGMA application_id = " + str(_SQLITESTORE_APPLICATION_ID))
+        await conn.execute(
+            "PRAGMA application_id = " + str(_SQLITESTORE_APPLICATION_ID)
+        )
         await conn.executemany(
             "INSERT OR IGNORE INTO sqlitestore_metadata(k, v) VALUES (?, ?)",
             [
@@ -282,7 +286,9 @@ class SQLiteStore(Store):
         prefix = _normalize_prefix(prefix)
         glob = prefix + "*"
         await self._ensure_open()
-        row = await self._pool.fetchone("SELECT COUNT(*) FROM zarr WHERE k GLOB ?", (glob,))
+        row = await self._pool.fetchone(
+            "SELECT COUNT(*) FROM zarr WHERE k GLOB ?", (glob,)
+        )
         return row is not None and row[0] == 0
 
     @override
@@ -312,7 +318,9 @@ class SQLiteStore(Store):
         parsed_uri_other = urllib.parse.urlparse(other.database_uri)
         return parsed_uri_other.path == parsed_uri_self.path
 
-    async def _get_partial_blob(self, key: str, byte_range: ByteRequest) -> bytes | None:
+    async def _get_partial_blob(
+        self, key: str, byte_range: ByteRequest
+    ) -> bytes | None:
         async with self._pool.acquire() as conn:
             row = await conn.fetchone("SELECT rowid FROM zarr WHERE k = ?", (key,))
             if row is None:
@@ -449,7 +457,9 @@ class SQLiteStore(Store):
 
         async with self._pool.acquire_write() as conn:
             # Check if key exists
-            row = await conn.fetchone("SELECT v FROM zarr WHERE k = ?", (prefix.rstrip("/"),))
+            row = await conn.fetchone(
+                "SELECT v FROM zarr WHERE k = ?", (prefix.rstrip("/"),)
+            )
             if row is not None:
                 raise ValueError(
                     f"Cannot delete directory {prefix} as it is a key in the store."
@@ -462,7 +472,9 @@ class SQLiteStore(Store):
     async def getsize(self, key: str) -> int:
         _validate_key(key)
         await self._ensure_open()
-        row = await self._pool.fetchone("SELECT LENGTH(v) FROM zarr WHERE k = ?", (key,))
+        row = await self._pool.fetchone(
+            "SELECT LENGTH(v) FROM zarr WHERE k = ?", (key,)
+        )
         if row is None:
             raise FileNotFoundError(key)
         return int(row[0])
@@ -473,8 +485,8 @@ class SQLiteStore(Store):
         glob = prefix + "*"
         await self._ensure_open()
         size_row = await self._pool.fetchone(
-                "SELECT SUM(LENGTH(v)) FROM zarr WHERE k GLOB ?", (glob,)
-            )
+            "SELECT SUM(LENGTH(v)) FROM zarr WHERE k GLOB ?", (glob,)
+        )
         if size_row is None or size_row[0] is None:
             return 0
         return int(size_row[0])
