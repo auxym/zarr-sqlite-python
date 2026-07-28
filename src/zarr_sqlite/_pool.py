@@ -7,6 +7,25 @@ from contextlib import asynccontextmanager
 from typing import Sequence, AsyncGenerator
 
 
+class AsyncBlob:
+    _blob: sqlite3.Blob
+
+    def __init__(self, blob: sqlite3.Blob):
+        self._blob = blob
+
+    def __len__(self) -> int:
+        return len(self._blob)
+
+    async def seek(self, offset: int, whence: int = 0) -> None:
+        return await asyncio.to_thread(self._blob.seek, offset, whence)
+
+    async def read(self, length: int = -1) -> bytes:
+        return await asyncio.to_thread(self._blob.read, length)
+
+    async def close(self) -> None:
+        await asyncio.to_thread(self._blob.close)
+
+
 class PooledConnection:
     _conn: sqlite3.Connection
 
@@ -32,6 +51,10 @@ class PooledConnection:
     async def fetchall(self, sql: str, params: Sequence) -> Sequence[tuple]:
         cur = await asyncio.to_thread(self._conn.execute, sql, params)
         return await asyncio.to_thread(cur.fetchall)
+
+    async def blobopen(self, table: str, column: str, rowid: int) -> AsyncBlob:
+        blob = await asyncio.to_thread(self._conn.blobopen, table, column, rowid)
+        return AsyncBlob(blob)
 
 
 class AsyncConnectionPool:
