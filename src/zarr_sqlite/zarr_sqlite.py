@@ -1,4 +1,3 @@
-from typing import final
 from typing import override, Self
 from collections.abc import Iterable, AsyncIterator
 import datetime
