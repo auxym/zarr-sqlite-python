@@ -293,7 +293,7 @@ class SQLiteStore(Store):
         parsed_uri_other = urllib.parse.urlparse(other.database_uri)
         return parsed_uri_other.path == parsed_uri_self.path
 
-    async def _get_partial_blob(self, conn: PooledConnection, key: str, byte_range: ByteRequest) -> bytes | None:
+    async def _get_partial_blob(self, key: str, byte_range: ByteRequest) -> bytes | None:
         async with self._pool.acquire() as conn:
             row = await conn.fetchone("SELECT rowid FROM zarr WHERE k = ?", (key,))
             if row is None:

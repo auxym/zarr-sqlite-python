@@ -163,19 +163,19 @@ class AsyncConnectionPool:
                     raise
 
     async def execute_write(self, sql: str, params: Sequence = ()) -> None:
-        with self.acquire_write() as conn:
+        async with self.acquire_write() as conn:
             await conn.execute(sql, params)
 
     async def executemany_write(self, sql: str, params: Sequence[Sequence] = ()) -> None:
-        with self.acquire_write() as conn:
+        async with self.acquire_write() as conn:
             await conn.executemany(sql, params)
 
     async def fetchone(self, sql: str, params: Sequence = {}) -> tuple:
-        with self.acquire() as conn:
+        async with self.acquire() as conn:
             return await conn.fetchone(sql, params)
 
     async def fetchall(self, sql: str, params: Sequence = {}) -> tuple:
-        with self.acquire() as conn:
+        async with self.acquire() as conn:
             return await conn.fetchall(sql, params)
 
     def close(self):
