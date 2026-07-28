@@ -47,23 +47,6 @@ def _validate_key(key: str):
         raise ValueError(f"Invalid key '{key}'")
 
 
-def _normalize_prefix(prefix: str) -> str:
-    """Validate a prefix string and append trailing `/` if needed
-
-    Validation is identical to key validation, except that a prefix may end in a `/`
-    character. A trailing `/` is appended to prefix if absent.
-
-    The empty string is a valid prefix (root group). The string "/" is not a valid
-    prefix.
-    """
-    is_valid = not (prefix.startswith("/") or "//" in prefix)
-    if not is_valid:
-        raise ValueError(f"Invalid prefix '{prefix}'")
-    if prefix != "" and not prefix.endswith("/"):
-        prefix += "/"
-    return prefix
-
-
 class SQLiteStore(Store):
     """
     Store for the local file system.
@@ -285,14 +268,47 @@ class SQLiteStore(Store):
             self._pool = None
             self._is_open = False
 
+    @staticmethod
+    def _get_text_boundaries(prefix: str) -> tuple[str, str]:
+        """Compute a pair of (lower bound, upper bound) strings.
+
+        These strings are used to achieve efficient prefix search with an SQL
+        clause like "(...) WHERE k < :lower_bound AND k > :upper_bound".
+
+        The upper bound string is obtained by replacing the trailing slash (/)
+        character in a prefix with a zero (0) character, which is the next
+        character is lexicographical order (in ASCII and Unicode).
+
+        We do not use GLOB or LIKE in prefix searches because they have many
+        issues in SQLite. For example, LIKE does not support case-sensitive
+        matching (required for zarr keys), and GLOB does not support escaping
+        the special glob characters (*, [, ] and ?).
+
+        IMPORTANT: this does not work for the empty prefix "", which is considered
+        valid.
+        """
+        assert prefix != ""
+
+        is_valid = not (prefix.startswith("/") or "//" in prefix)
+        if not is_valid:
+            raise ValueError(f"Invalid prefix '{prefix}'")
+        if prefix != "" and not prefix.endswith("/"):
+            prefix += "/"
+
+        upper = prefix[:-1] + "0"
+        return (prefix, upper)
+
     @override
     async def is_empty(self, prefix: str) -> bool:
-        prefix = _normalize_prefix(prefix)
-        glob = prefix + "*"
         await self._ensure_open()
-        row = await self._pool.fetchone(
-            "SELECT COUNT(*) FROM zarr WHERE k GLOB ?", (glob,)
-        )
+        if prefix == "":
+            row = await self._pool.fetchone("SELECT EXISTS(SELECT 1 FROM zarr LIMIT 1)")
+        else:
+            bounds = self._get_text_boundaries(prefix)
+            row = await self._pool.fetchone(
+                "SELECT EXISTS(SELECT 1 FROM zarr WHERE k > ? AND k < ? LIMIT 1)",
+                bounds,
+            )
         return row is not None and row[0] == 0
 
     @override
@@ -431,17 +447,19 @@ class SQLiteStore(Store):
 
     @override
     async def list_prefix(self, prefix: str) -> AsyncIterator[str]:
-        prefix = _normalize_prefix(prefix)
-        glob = prefix + "*"
         await self._ensure_open()
-        async for row in self._pool.fetch_iter(
-            "SELECT k FROM zarr WHERE k GLOB ?", (glob,)
-        ):
-            yield str(row[0])
+        if prefix == "":
+            async for row in self._pool.fetch_iter("SELECT k FROM zarr"):
+                yield str(row[0])
+        else:
+            bounds = self._get_text_boundaries(prefix)
+            async for row in self._pool.fetch_iter(
+                "SELECT k FROM zarr WHERE k > ? AND k < ?", bounds
+            ):
+                yield str(row[0])
 
     @override
     async def list_dir(self, prefix: str) -> AsyncIterator[str]:
-        prefix = _normalize_prefix(prefix)
         seen: set[str] = set()
         async for full_key in self.list_prefix(prefix):
             rel_key = full_key.removeprefix(prefix)
@@ -456,7 +474,6 @@ class SQLiteStore(Store):
     @override
     async def delete_dir(self, prefix: str) -> None:
         self._check_writable()
-        prefix = _normalize_prefix(prefix)
         await self._ensure_open()
 
         async with self._pool.acquire_write() as conn:
@@ -469,8 +486,11 @@ class SQLiteStore(Store):
                     f"Cannot delete directory {prefix} as it is a key in the store."
                 )
 
-            glob = prefix + "*"
-            await conn.execute("DELETE FROM zarr WHERE k GLOB ?", (glob,))
+            if prefix == "":
+                await conn.execute("DELETE FROM zarr")
+            else:
+                bounds = self._get_text_boundaries(prefix)
+                await conn.execute("DELETE FROM zarr WHERE k > ? AND k < ?", bounds)
 
     @override
     async def getsize(self, key: str) -> int:
@@ -485,12 +505,14 @@ class SQLiteStore(Store):
 
     @override
     async def getsize_prefix(self, prefix: str) -> int:
-        prefix = _normalize_prefix(prefix)
-        glob = prefix + "*"
         await self._ensure_open()
-        size_row = await self._pool.fetchone(
-            "SELECT SUM(LENGTH(v)) FROM zarr WHERE k GLOB ?", (glob,)
-        )
+        if prefix == "":
+            size_row = await self._pool.fetchone("SELECT SUM(LENGTH(v)) FROM zarr")
+        else:
+            bounds = self._get_text_boundaries(prefix)
+            size_row = await self._pool.fetchone(
+                "SELECT SUM(LENGTH(v)) FROM zarr WHERE k > ? AND k < ?", bounds
+            )
         if size_row is None or size_row[0] is None:
             return 0
         return int(size_row[0])
