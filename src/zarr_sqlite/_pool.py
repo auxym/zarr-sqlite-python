@@ -38,17 +38,17 @@ class PooledConnection:
     async def rollback(self) -> None:
         await asyncio.to_thread(self._conn.rollback)
 
-    async def execute(self, sql: str, params: Sequence) -> None:
+    async def execute(self, sql: str, params: Sequence = ()) -> None:
         await asyncio.to_thread(self._conn.execute, sql, params)
 
-    async def executemany(self, sql: str, params: Sequence[Sequence]) -> None:
+    async def executemany(self, sql: str, params: Sequence[Sequence] = ()) -> None:
         await asyncio.to_thread(self._conn.executemany, sql, params)
 
-    async def fetchone(self, sql: str, params: Sequence) -> tuple:
+    async def fetchone(self, sql: str, params: Sequence = {}) -> tuple:
         cur = await asyncio.to_thread(self._conn.execute, sql, params)
         return await asyncio.to_thread(cur.fetchone)
 
-    async def fetchall(self, sql: str, params: Sequence) -> Sequence[tuple]:
+    async def fetchall(self, sql: str, params: Sequence = ()) -> Sequence[tuple]:
         cur = await asyncio.to_thread(self._conn.execute, sql, params)
         return await asyncio.to_thread(cur.fetchall)
 
