@@ -5,6 +5,7 @@ import sqlite3
 from pathlib import Path
 import urllib.parse
 import uuid
+import asyncio
 
 from zarr.core.buffer import BufferPrototype, Buffer
 
@@ -85,6 +86,7 @@ class SQLiteStore(Store):
 
     database_uri: str
     _is_open: bool
+    _open_lock: asyncio.Lock
     _pool: AsyncConnectionPool | None
     _journal_mode: str | None
     _page_size: int
@@ -117,6 +119,7 @@ class SQLiteStore(Store):
         self._journal_mode = journal_mode
         self._page_size = page_size
         self._pool = None
+        self._open_lock = asyncio.Lock()
 
     @staticmethod
     def _build_database_uri(database: Path | str, read_only: bool) -> str:
@@ -161,6 +164,16 @@ class SQLiteStore(Store):
         return f"file:{uri_path}?{urllib.parse.urlencode(query, doseq=True)}"
 
     @override
+    async def _ensure_open(self):
+        if self._is_open:
+            return
+
+        async with self._open_lock:
+            if self._is_open:
+                return
+            await self._open()
+
+    @override
     async def _open(self) -> None:
         if self._is_open:
             raise ValueError("store is already open")
@@ -170,6 +183,7 @@ class SQLiteStore(Store):
             async with self._pool.acquire_write() as conn:
                 await self._create_schema(conn)
         await self._validate_schema()
+        self._is_open = True
 
     @override
     def with_read_only(self, read_only: bool = False) -> Self:
@@ -239,8 +253,11 @@ class SQLiteStore(Store):
                 )
 
         version_str = metadata["sqlitestore_version"]
-        version = [int(n) for n in version_str.strip().split(".")]
-        if len(version) > 2:
+        try:
+            version = [int(n) for n in version_str.strip().split(".")]
+        except ValueError:
+            raise ValueError(f"Invalid sqlitestore_version string: '{version_str}'")
+        if len(version) != 2:
             raise ValueError(f"Invalid sqlitestore_version string: '{version_str}'")
         if version[0] > 1:
             raise ValueError(f"Unsupported sqlitestore_version: {version_str}")
@@ -264,6 +281,7 @@ class SQLiteStore(Store):
     async def is_empty(self, prefix: str) -> bool:
         prefix = _normalize_prefix(prefix)
         glob = prefix + "*"
+        await self._ensure_open()
         row = await self._pool.fetchone("SELECT COUNT(*) FROM zarr WHERE k GLOB ?", (glob,))
         return row is not None and row[0] == 0
 
@@ -271,6 +289,7 @@ class SQLiteStore(Store):
     async def clear(self) -> None:
         """Clear the store."""
         self._check_writable()
+        await self._ensure_open()
         async with self._pool.acquire_write() as conn:
             await conn.execute("DROP TABLE IF EXISTS zarr")
             await self._create_schema(conn)

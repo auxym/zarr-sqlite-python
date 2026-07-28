@@ -1,6 +1,7 @@
 """Unit tests for the public API of SQLiteStore."""
 
 import datetime
+import os
 import sqlite3
 
 import pytest
@@ -43,11 +44,15 @@ def store():
 
 @pytest.fixture
 def tmpfile_store():
-    fp = NamedTemporaryFile(suffix=".db")
-    fp.close
+    fp = NamedTemporaryFile(suffix=".db", delete=False)
+    fp.close()
     s = SQLiteStore(fp.name)
     yield s
     s.close()
+    try:
+        os.unlink(fp.name)
+    except PermissionError:
+        pass
 
 
 @pytest.mark.asyncio
@@ -131,8 +136,12 @@ async def test_get_suffix_larger_than_length(store):
 
 @pytest.mark.asyncio
 async def test_get_non_bytes(store):
-    await store._execute_write("INSERT INTO zarr (k, v) VALUES (?, ?)", ("k", 5))
-    await store.get("k", default_buffer_prototype()) is None
+    await store.set("dummy", make_buffer(b"data"))
+    con = sqlite3.connect(store.database_uri, uri=True)
+    con.execute("INSERT INTO zarr (k, v) VALUES (?, ?)", ("k", 5))
+    con.commit()
+    con.close()
+    assert await store.get("k", default_buffer_prototype()) is None
 
 
 @pytest.mark.asyncio
@@ -364,6 +373,7 @@ async def test_with_read_only(tmpfile_store):
 
     with pytest.raises(ValueError):
         await ro.set("b", make_buffer(b"data"))
+    ro.close()
 
 
 @pytest.mark.asyncio
@@ -430,9 +440,10 @@ def test_normalize_prefix_valid_unchanged():
 async def test_schema_tables_exist(store):
     """Both required tables are created on first use."""
     await store.set("key", make_buffer(b"data"))
-    con = store._con
+    con = sqlite3.connect(store.database_uri, uri=True)
     cur = con.execute("SELECT name FROM sqlite_master WHERE type='table'")
     tables = {row[0] for row in cur.fetchall()}
+    con.close()
     assert "zarr" in tables
     assert "sqlitestore_metadata" in tables
 
@@ -441,31 +452,34 @@ async def test_schema_tables_exist(store):
 async def test_schema_not_null_constraints(store):
     """Both k and v columns in both tables have NOT NULL."""
     await store.set("key", make_buffer(b"data"))
-    con = store._con
+    con = sqlite3.connect(store.database_uri, uri=True)
     for table in ("zarr", "sqlitestore_metadata"):
         cur = con.execute(f"PRAGMA table_info({table})")
         for row in cur.fetchall():
             assert row[3] == 1, (
                 f"Column '{row[1]}' in table '{table}' must have NOT NULL"
             )
+    con.close()
 
 
 @pytest.mark.asyncio
 async def test_schema_application_id(store):
     """application_id is set to the spec value."""
     await store.set("key", make_buffer(b"data"))
-    con = store._con
+    con = sqlite3.connect(store.database_uri, uri=True)
     cur = con.execute("PRAGMA application_id")
     assert cur.fetchone()[0] == _SQLITESTORE_APPLICATION_ID
+    con.close()
 
 
 @pytest.mark.asyncio
 async def test_metadata_required_records(store):
     """All required metadata records exist with correct values."""
     await store.set("key", make_buffer(b"data"))
-    con = store._con
+    con = sqlite3.connect(store.database_uri, uri=True)
     cur = con.execute("SELECT k, v FROM sqlitestore_metadata")
     metadata = dict(cur.fetchall())
+    con.close()
     assert metadata["sqlitestore_version"] == _SQLITESTORE_SPEC_VERSION
     assert metadata["compatible_flags"] == ""
     assert metadata["incompatible_flags"] == ""
@@ -477,9 +491,10 @@ async def test_metadata_required_records(store):
 async def test_metadata_created_by(store):
     """created_by contains the package name."""
     await store.set("key", make_buffer(b"data"))
-    con = store._con
+    con = sqlite3.connect(store.database_uri, uri=True)
     cur = con.execute("SELECT v FROM sqlitestore_metadata WHERE k = 'created_by'")
     created_by = cur.fetchone()[0]
+    con.close()
     assert created_by.startswith("zarr-sqlite-python")
 
 
@@ -487,9 +502,10 @@ async def test_metadata_created_by(store):
 async def test_metadata_created_time(store):
     """created_time is a valid ISO 8601 timestamp within the last 5 minutes."""
     await store.set("key", make_buffer(b"data"))
-    con = store._con
+    con = sqlite3.connect(store.database_uri, uri=True)
     cur = con.execute("SELECT v FROM sqlitestore_metadata WHERE k = 'created_time'")
     created_time = datetime.datetime.fromisoformat(cur.fetchone()[0])
+    con.close()
     now = datetime.datetime.now(datetime.timezone.utc)
     assert now - datetime.timedelta(minutes=5) <= created_time <= now
 
