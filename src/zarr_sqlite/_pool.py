@@ -56,6 +56,9 @@ class PooledConnection:
         blob = await asyncio.to_thread(self._conn.blobopen, table, column, rowid)
         return AsyncBlob(blob)
 
+    def close(self):
+        self._conn.close()
+
 
 class AsyncConnectionPool:
     _available: asyncio.Queue[PooledConnection]
@@ -108,6 +111,8 @@ class AsyncConnectionPool:
     @asynccontextmanager
     async def acquire(self) -> AsyncGenerator[PooledConnection, None]:
         """Get a connection for read operations"""
+        if not self.is_open:
+            raise ValueError("Connection pool is closed.")
         try:
             conn = self._available.get_nowait()
         except asyncio.QueueEmpty:
@@ -130,6 +135,8 @@ class AsyncConnectionPool:
     @asynccontextmanager
     async def acquire_write(self) -> AsyncGenerator[PooledConnection, None]:
         """Acquire single writer connection"""
+        if not self.is_open:
+            raise ValueError("Connection pool is closed.")
         if self.read_only:
             raise ValueError("Connection pool is read-only.")
         assert self._writer_connection is not None
@@ -146,3 +153,23 @@ class AsyncConnectionPool:
                 except BaseException:
                     await self._writer_connection.rollback()
                     raise
+
+    def close(self):
+        if not self.is_open:
+            return
+        self._is_open = False
+
+        if self._writer_connection is not None:
+            try:
+                self._writer_connection.close()
+            except Exception:
+                pass
+
+        for conn in self._raw_connections:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+        self._raw_connections = []
+        self._writer_connection = None
