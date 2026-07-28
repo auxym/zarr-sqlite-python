@@ -426,8 +426,7 @@ class SQLiteStore(Store):
     @override
     async def list(self) -> AsyncIterator[str]:
         await self._ensure_open()
-        rows = await self._pool.fetchall("SELECT k FROM zarr")
-        for row in rows:
+        async for row in self._pool.fetch_iter("SELECT k FROM zarr"):
             yield str(row[0])
 
     @override
@@ -435,8 +434,9 @@ class SQLiteStore(Store):
         prefix = _normalize_prefix(prefix)
         glob = prefix + "*"
         await self._ensure_open()
-        rows = await self._pool.fetchall("SELECT k FROM zarr WHERE k GLOB ?", (glob,))
-        for row in rows:
+        async for row in self._pool.fetch_iter(
+            "SELECT k FROM zarr WHERE k GLOB ?", (glob,)
+        ):
             yield str(row[0])
 
     @override

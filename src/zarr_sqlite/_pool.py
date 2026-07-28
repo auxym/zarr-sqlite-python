@@ -127,6 +127,36 @@ class PooledConnection:
         cur = await asyncio.to_thread(self._conn.execute, sql, params)
         return await asyncio.to_thread(cur.fetchall)
 
+    async def fetch_iter(
+        self,
+        sql: str,
+        params: Sequence[Any] = (),
+        batch_size: int = 100,
+    ) -> AsyncGenerator[tuple[Any, ...], None]:
+        """Execute a SQL statement and yield result rows one at a time.
+
+        Rows are fetched in batches to avoid loading the entire result set
+        into memory at once.
+
+        Args:
+            sql: The SQL statement to execute.
+            params: Parameters for the SQL statement.
+            batch_size: Number of rows to fetch per batch.
+
+        Yields:
+            Rows as tuples of column values.
+        """
+        cur = await asyncio.to_thread(self._conn.execute, sql, params)
+        try:
+            while True:
+                rows = await asyncio.to_thread(cur.fetchmany, batch_size)
+                if not rows:
+                    break
+                for row in rows:
+                    yield row
+        finally:
+            await asyncio.to_thread(cur.close)
+
     async def blobopen(self, table: str, column: str, rowid: int) -> AsyncBlob:
         """Open a BLOB for incremental I/O.
 
@@ -376,6 +406,29 @@ class AsyncConnectionPool:
         """
         async with self.acquire() as conn:
             return await conn.fetchall(sql, params)
+
+    async def fetch_iter(
+        self,
+        sql: str,
+        params: Sequence[Any] = (),
+        batch_size: int = 100,
+    ) -> AsyncGenerator[tuple[Any, ...], None]:
+        """Execute a read SQL statement and yield result rows one at a time.
+
+        Rows are fetched in batches to avoid loading the entire result set
+        into memory at once.
+
+        Args:
+            sql: The SQL statement to execute.
+            params: Parameters for the SQL statement.
+            batch_size: Number of rows to fetch per batch.
+
+        Yields:
+            Rows as tuples of column values.
+        """
+        async with self.acquire() as conn:
+            async for row in conn.fetch_iter(sql, params, batch_size):
+                yield row
 
     def close(self) -> None:
         """Close the connection pool and all connections.
