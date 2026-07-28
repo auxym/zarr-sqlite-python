@@ -20,6 +20,7 @@ from zarr.abc.store import (
 )
 
 from ._version import __version__
+from ._pool import AsyncConnectionPool, AsyncBlob
 
 _SQLITESTORE_SPEC_VERSION = "1.0"  # spec version we adhere to
 _SQLITESTORE_APPLICATION_ID = 0x10B50760
@@ -82,10 +83,15 @@ class SQLiteStore(Store):
 
     database_uri: str
     _is_open: bool
-    _con: sqlite3.Connection
-    _lock: asyncio.Lock | None
+    _pool: AsyncConnectionPool | None
     _journal_mode: str | None
     _page_size: int
+
+    @property
+    def _con(self) -> sqlite3.Connection:
+        if self._pool is None or self._pool._writer_connection is None:
+            raise RuntimeError("Store not open")
+        return self._pool._writer_connection._conn
 
     @property
     @override
@@ -114,6 +120,7 @@ class SQLiteStore(Store):
         self.database_uri = self._build_database_uri(database, read_only=read_only)
         self._journal_mode = journal_mode
         self._page_size = page_size
+        self._pool = None
 
     @staticmethod
     def _build_database_uri(database: Path | str, read_only: bool) -> str:
@@ -162,97 +169,38 @@ class SQLiteStore(Store):
         if self._is_open:
             raise ValueError("store is already open")
 
-        # Ensure sqlite3's thread safe serialized mode is enabled
-        # zarr accesses the store from multiple threads
-        # See: https://docs.python.org/3/library/sqlite3.html#sqlite3.threadsafety
         if sqlite3.threadsafety != 3:
             raise RuntimeError(
                 "SQLiteStore requires sqlite3 to be compiled with threadsafety=3 (serialized mode)."
             )
 
-        self._lock = asyncio.Lock()
-        await super()._open()
-        self._con = sqlite3.connect(
-            self.database_uri, uri=True, autocommit=False, check_same_thread=False
-        )
+        self._pool = AsyncConnectionPool(self.database_uri, read_only=self._read_only)
         if not self._read_only:
-            await self._create_schema()
+            async with self._pool.acquire_write() as conn:
+                await self._create_schema(conn)
         await self._validate_schema()
 
     @override
     def with_read_only(self, read_only: bool = False) -> SQLiteStore:
         return SQLiteStore(self.database_uri, read_only=read_only)
 
-    async def _execute_write(self, query: str, params: Sequence[object] = ()) -> None:
-        """Execute a query with our lock and commit."""
-        await self._ensure_open()
-        assert self._lock is not None
-        async with self._lock:
-            cursor = self._con.cursor()
-            _ = cursor.execute(query, params)
-            self._con.commit()
-
-    async def _execute_write_many(
-        self, query: str, params: Iterable[Sequence[object]] = ()
-    ) -> None:
-        """Execute a query with many parameter sets, with our lock and commit."""
-        await self._ensure_open()
-        assert self._lock is not None
-        async with self._lock:
-            cursor = self._con.cursor()
-            _ = cursor.executemany(query, params)
-            self._con.commit()
-
-    async def _execute(
-        self, query: str, params: Sequence[object] = ()
-    ) -> sqlite3.Cursor:
-        """Placeholder for future async implementation."""
-        await self._ensure_open()
-        cur = self._con.cursor()
-        return cur.execute(query, params)
-
-    async def _set_journal(self) -> None:
-        if self._journal_mode is None:
-            # None = don't attempt to change journal mode
-            # Keep either the existing setting or the SQLite default
-            return
-
-        if self._journal_mode not in {
-            "DELETE",
-            "WAL",
-        }:
+    async def _create_schema(self, conn) -> None:
+        if self._journal_mode is not None and self._journal_mode not in {"DELETE", "WAL"}:
             raise ValueError(f"Invalid journal_mode: {self._journal_mode}")
+        if self._journal_mode is not None:
+            await conn.execute("PRAGMA journal_mode=" + self._journal_mode)
 
-        self._con.autocommit = True
-        self._con.execute(f"PRAGMA journal_mode={self._journal_mode}")
-        self._con.autocommit = False
-
-    async def _update_timestamp(self) -> None:
-        now = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
-        await self._execute_write(
-            "INSERT INTO sqlitestore_metadata(k, v) VALUES (?, ?) "
-            "ON CONFLICT(k) DO UPDATE SET v = excluded.v",
-            ("created_time", now),
-        )
-
-    async def _create_schema(self) -> None:
-        await self._set_journal()
-
-        # Note: setting page size has no effect unless the db is empty
-        self._con.execute(f"PRAGMA page_size={int(self._page_size)}")
-
-        await self._execute_write(
+        await conn.execute("PRAGMA page_size=" + str(int(self._page_size)))
+        await conn.execute(
             "CREATE TABLE IF NOT EXISTS sqlitestore_metadata("
             "k TEXT PRIMARY KEY NOT NULL, v TEXT NOT NULL)"
         )
-        await self._execute_write(
+        await conn.execute(
             "CREATE TABLE IF NOT EXISTS zarr("
             "k TEXT PRIMARY KEY NOT NULL, v BLOB NOT NULL)"
         )
-        await self._execute_write(
-            f"PRAGMA application_id = {_SQLITESTORE_APPLICATION_ID}"
-        )
-        await self._execute_write_many(
+        await conn.execute("PRAGMA application_id = " + str(_SQLITESTORE_APPLICATION_ID))
+        await conn.executemany(
             "INSERT OR IGNORE INTO sqlitestore_metadata(k, v) VALUES (?, ?)",
             [
                 ("sqlitestore_version", _SQLITESTORE_SPEC_VERSION),
@@ -261,12 +209,18 @@ class SQLiteStore(Store):
                 ("created_by", _CREATED_BY),
             ],
         )
-        await self._update_timestamp()
+
+        now = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+        await conn.execute(
+            "INSERT INTO sqlitestore_metadata(k, v) VALUES (?, ?) "
+            "ON CONFLICT(k) DO UPDATE SET v = excluded.v",
+            ("created_time", now),
+        )
 
     async def _validate_schema(self) -> None:
         for required_table in ("zarr", "sqlitestore_metadata"):
-            cur = await self._execute(f"PRAGMA table_info({required_table})")
-            rows = cur.fetchall()
+            async with self._pool.acquire() as conn:
+                rows = await conn.fetchall("PRAGMA table_info(" + required_table + ")")
             if not rows:
                 raise ValueError(
                     f"Invalid SQLiteStore file: missing required table '{required_table}'"
@@ -277,26 +231,23 @@ class SQLiteStore(Store):
             "compatible_flags",
             "incompatible_flags",
         )
-        cur = await self._execute(
-            "SELECT k, v FROM sqlitestore_metadata WHERE k IN (?, ?, ?)", metadata_keys
-        )
-        metadata = dict(cur.fetchall())
+        async with self._pool.acquire() as conn:
+            metadata_rows = await conn.fetchall(
+                "SELECT k, v FROM sqlitestore_metadata WHERE k IN (?, ?, ?)",
+                metadata_keys,
+            )
+        metadata = dict(metadata_rows) if metadata_rows else {}
         for k in metadata_keys:
             if k not in metadata:
                 raise ValueError(
                     f"Invalid SQLiteStore file: missing required metadata entry '{k}'"
                 )
 
-        # Check schema version
-        try:
-            version_str = metadata["sqlitestore_version"]
-            version = [int(n) for n in version_str.strip().split(".")]
-        except Exception:
-            raise ValueError(f"Invalid sqlitestore_version string: '{version_str}'")
+        version_str = metadata["sqlitestore_version"]
+        version = [int(n) for n in version_str.strip().split(".")]
         if len(version) > 2:
             raise ValueError(f"Invalid sqlitestore_version string: '{version_str}'")
         if version[0] > 1:
-            # Major version is greater than what we support
             raise ValueError(f"Unsupported sqlitestore_version: {version_str}")
 
         incompat_flags = [
@@ -304,41 +255,32 @@ class SQLiteStore(Store):
             for f in metadata["incompatible_flags"].split(",")
             if len(f.strip()) > 0
         ]
-        # We don't know about any flags
         if len(incompat_flags) > 0:
             raise ValueError(f"SQLiteStore flag '{incompat_flags[0]}' is not supported")
 
     @override
     def close(self) -> None:
-        if not self._is_open:
-            return
-
-        if not self._read_only:
-            try:
-                # TODO: Update timestamp on close (sync)
-                # await self._update_timestamp()
-                if self._journal_mode == "WAL":
-                    self._con.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-            except Exception:
-                pass
-
+        if self._pool is not None:
+            self._pool.close()
         super().close()
-        self._con.close()
-        self._lock = None
 
     @override
     async def is_empty(self, prefix: str) -> bool:
         prefix = _normalize_prefix(prefix)
         glob = prefix + "*"
-        cur = await self._execute("SELECT COUNT(*) FROM zarr WHERE k GLOB ?", (glob,))
-        return cur.fetchone()[0] == 0
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchone("SELECT COUNT(*) FROM zarr WHERE k GLOB ?", (glob,))
+        return row is not None and row[0] == 0
 
     @override
     async def clear(self) -> None:
         """Clear the store."""
         self._check_writable()
-        await self._execute_write("DROP TABLE IF EXISTS zarr")
-        await self._create_schema()
+        async with self._pool.acquire_write() as conn:
+            await conn.execute("DROP TABLE IF EXISTS zarr")
+            await conn.commit()
+        async with self._pool.acquire_write() as conn:
+            await self._create_schema(conn)
 
     @override
     def __str__(self) -> str:
@@ -358,39 +300,38 @@ class SQLiteStore(Store):
         parsed_uri_other = urllib.parse.urlparse(other.database_uri)
         return parsed_uri_other.path == parsed_uri_self.path
 
-    async def _get_partial_blob(
-        self, key: str, byte_range: ByteRequest
-    ) -> bytes | None:
-        cur = await self._execute("SELECT rowid FROM zarr WHERE k = ?", (key,))
-        row = cur.fetchone()
+    async def _get_partial_blob(self, key: str, byte_range: ByteRequest) -> bytes | None:
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchone("SELECT rowid FROM zarr WHERE k = ?", (key,))
         if row is None:
             return None
         rowid = row[0]
 
-        blob = self._con.blobopen("zarr", "v", rowid, readonly=True)
-        blob_len = len(blob)
+        async with self._pool.acquire() as conn:
+            blob = await conn.blobopen("zarr", "v", rowid)
+            blob_len = len(blob)
 
-        match byte_range:
-            case OffsetByteRequest(offset=o):
-                start, length = min(o, blob_len), blob_len - min(o, blob_len)
-            case RangeByteRequest(start=s, end=e):
-                start = max(0, s)
-                end_clamped = min(blob_len, e)
-                length = max(0, end_clamped - start)
-            case SuffixByteRequest(suffix=s):
-                start = max(0, blob_len - s)
-                length = blob_len - start
-            case _:
-                raise ValueError(f"Unsupported byte range type: {type(byte_range)}")
+            match byte_range:
+                case OffsetByteRequest(offset=o):
+                    start, length = min(o, blob_len), blob_len - min(o, blob_len)
+                case RangeByteRequest(start=s, end=e):
+                    start = max(0, s)
+                    end_clamped = min(blob_len, e)
+                    length = max(0, end_clamped - start)
+                case SuffixByteRequest(suffix=s):
+                    start = max(0, blob_len - s)
+                    length = blob_len - start
+                case _:
+                    raise ValueError(f"Unsupported byte range type: {type(byte_range)}")
 
-        if length == 0:
-            return b""
+            if length == 0:
+                return b""
 
-        try:
-            blob.seek(start)
-            data = blob.read(length)
-        finally:
-            blob.close()
+            try:
+                await blob.seek(start)
+                data = await blob.read(length)
+            finally:
+                await blob.close()
 
         return data
 
@@ -402,11 +343,12 @@ class SQLiteStore(Store):
         byte_range: ByteRequest | None = None,
     ) -> Buffer | None:
         _validate_key(key)
+        await self._ensure_open()
 
         data = None
         if byte_range is None:
-            cur = await self._execute("SELECT v FROM zarr WHERE k = ?", (key,))
-            row = cur.fetchone()
+            async with self._pool.acquire() as conn:
+                row = await conn.fetchone("SELECT v FROM zarr WHERE k = ?", (key,))
             if row is not None and isinstance(row[0], bytes):
                 data = row[0]
         else:
@@ -431,42 +373,63 @@ class SQLiteStore(Store):
     @override
     async def exists(self, key: str) -> bool:
         _validate_key(key)
-        cur = await self._execute("SELECT v FROM zarr WHERE k = ?", (key,))
-        return cur.fetchone() is not None
+        await self._ensure_open()
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchone("SELECT v FROM zarr WHERE k = ?", (key,))
+        return row is not None
 
     @override
     async def set(self, key: str, value: Buffer) -> None:
+        await self._ensure_open()
         self._check_writable()
         _validate_key(key)
-        await self._execute_write(
-            "INSERT OR REPLACE INTO zarr (k, v) VALUES (?, ?)", (key, value.to_bytes())
-        )
+        async with self._pool.acquire_write() as conn:
+            await conn.execute(
+                "INSERT OR REPLACE INTO zarr (k, v) VALUES (?, ?)", (key, value.to_bytes())
+            )
+            await conn.commit()
 
     @override
     async def set_if_not_exists(self, key: str, value: Buffer) -> None:
         self._check_writable()
         _validate_key(key)
-        await self._execute_write(
-            "INSERT OR IGNORE INTO zarr (k, v) VALUES (?, ?)", (key, value.to_bytes())
-        )
+        async with self._pool.acquire_write() as conn:
+            await conn.execute(
+                "INSERT OR IGNORE INTO zarr (k, v) VALUES (?, ?)", (key, value.to_bytes())
+            )
+            await conn.commit()
+        await self._ensure_open()
 
+    async def _execute_write(self, query: str, params: Sequence[object] = ()) -> None:
+        """Execute a query with our lock and commit."""
+        async with self._pool.acquire_write() as conn:
+            await conn.execute(query, params)
+            await conn.commit()
+
+        await self._ensure_open()
     @override
     async def delete(self, key: str) -> None:
         self._check_writable()
-        await self._execute_write("DELETE FROM zarr WHERE k = ?", (key,))
+        async with self._pool.acquire_write() as conn:
+            await conn.execute("DELETE FROM zarr WHERE k = ?", (key,))
+            await conn.commit()
 
     @override
     async def list(self) -> AsyncIterator[str]:
-        cur = await self._execute("SELECT k FROM zarr")
-        for row in cur:
+        async with self._pool.acquire() as conn:
+        await self._ensure_open()
+            rows = await conn.fetchall("SELECT k FROM zarr")
+        for row in rows:
             yield str(row[0])
 
     @override
     async def list_prefix(self, prefix: str) -> AsyncIterator[str]:
         prefix = _normalize_prefix(prefix)
         glob = prefix + "*"
-        cur = await self._execute("SELECT k FROM zarr WHERE k GLOB ?", (glob,))
-        for row in cur:
+        async with self._pool.acquire() as conn:
+        await self._ensure_open()
+            rows = await conn.fetchall("SELECT k FROM zarr WHERE k GLOB ?", (glob,))
+        for row in rows:
             yield str(row[0])
 
     @override
@@ -478,7 +441,6 @@ class SQLiteStore(Store):
             parts = rel_key.split("/")
             k = parts[0]
             if len(parts) > 1:
-                # k is a prefix
                 k = k + "/"
             if k not in seen:
                 seen.add(k)
@@ -486,6 +448,7 @@ class SQLiteStore(Store):
 
     @override
     async def delete_dir(self, prefix: str) -> None:
+        await self._ensure_open()
         self._check_writable()
         prefix = _normalize_prefix(prefix)
         if await self.exists(prefix.rstrip("/")):
@@ -494,25 +457,29 @@ class SQLiteStore(Store):
             )
 
         glob = prefix + "*"
-        await self._execute_write("DELETE FROM zarr WHERE k GLOB ?", (glob,))
+        async with self._pool.acquire_write() as conn:
+            await conn.execute("DELETE FROM zarr WHERE k GLOB ?", (glob,))
+            await conn.commit()
 
     @override
     async def getsize(self, key: str) -> int:
         _validate_key(key)
-        cur = await self._execute("SELECT LENGTH(v) FROM zarr WHERE k = ?", (key,))
-        row = cur.fetchone()
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchone("SELECT LENGTH(v) FROM zarr WHERE k = ?", (key,))
         if row is None:
             raise FileNotFoundError(key)
+        await self._ensure_open()
         return int(row[0])
 
     @override
     async def getsize_prefix(self, prefix: str) -> int:
         prefix = _normalize_prefix(prefix)
         glob = prefix + "*"
-        cur = await self._execute(
-            "SELECT SUM(LENGTH(v)) FROM zarr WHERE k GLOB ?", (glob,)
-        )
-        size = cur.fetchone()
-        if size is None or size[0] is None:
+        async with self._pool.acquire() as conn:
+            size_row = await conn.fetchone(
+        await self._ensure_open()
+                "SELECT SUM(LENGTH(v)) FROM zarr WHERE k GLOB ?", (glob,)
+            )
+        if size_row is None or size_row[0] is None:
             return 0
-        return int(size[0])
+        return int(size_row[0])
