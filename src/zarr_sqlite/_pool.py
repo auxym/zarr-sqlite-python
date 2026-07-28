@@ -44,7 +44,7 @@ class PooledConnection:
     async def executemany(self, sql: str, params: Sequence[Sequence] = ()) -> None:
         await asyncio.to_thread(self._conn.executemany, sql, params)
 
-    async def fetchone(self, sql: str, params: Sequence = {}) -> tuple:
+    async def fetchone(self, sql: str, params: Sequence = ()) -> tuple:
         cur = await asyncio.to_thread(self._conn.execute, sql, params)
         return await asyncio.to_thread(cur.fetchone)
 
@@ -78,8 +78,15 @@ class AsyncConnectionPool:
     _raw_connections: list[sqlite3.Connection]
     _max_connections: int
     _read_only: bool
+    _acquire_timeout: int
 
-    def __init__(self, uri: str, n_connections: int = 10, read_only: bool = False):
+    def __init__(
+        self,
+        uri: str,
+        n_connections: int = 10,
+        read_only: bool = False,
+        acquire_timeout=5.0,
+    ):
         self._writer_lock = asyncio.Lock()
         self._available = asyncio.Queue()
         self._uri = uri
@@ -88,6 +95,7 @@ class AsyncConnectionPool:
         self._max_connections = n_connections
         self._read_only = read_only
         self._creation_lock = asyncio.Lock()
+        self._acquire_timeout = acquire_timeout
 
         if not self._read_only:
             self._writer_connection = PooledConnection(self._create_connection_sync())
@@ -117,6 +125,22 @@ class AsyncConnectionPool:
         return PooledConnection(conn)
 
     @asynccontextmanager
+    async def _writer_lock_timeout(self):
+        try:
+            await asyncio.wait_for(
+                self._writer_lock.acquire(), timeout=self._acquire_timeout
+            )
+        except asyncio.TimeoutError:
+            raise TimeoutError(
+                "Timed out waiting for writer connection to become available"
+            )
+
+        try:
+            yield
+        finally:
+            self._writer_lock.release()
+
+    @asynccontextmanager
     async def acquire(self) -> AsyncGenerator[PooledConnection, None]:
         """Get a connection for read operations"""
         if not self.is_open:
@@ -130,7 +154,9 @@ class AsyncConnectionPool:
                 if len(self._raw_connections) < self._max_connections:
                     conn = await self._create_connection()
                 else:
-                    conn = await self._available.get()
+                    conn = await asyncio.wait_for(
+                        self._available.get(), timeout=self._acquire_timeout
+                    )
 
         try:
             yield conn
@@ -149,7 +175,7 @@ class AsyncConnectionPool:
             raise ValueError("Connection pool is read-only.")
         assert self._writer_connection is not None
 
-        async with self._writer_lock:
+        async with self._writer_lock_timeout():
             try:
                 yield self._writer_connection
             except BaseException:
@@ -166,15 +192,17 @@ class AsyncConnectionPool:
         async with self.acquire_write() as conn:
             await conn.execute(sql, params)
 
-    async def executemany_write(self, sql: str, params: Sequence[Sequence] = ()) -> None:
+    async def executemany_write(
+        self, sql: str, params: Sequence[Sequence] = ()
+    ) -> None:
         async with self.acquire_write() as conn:
             await conn.executemany(sql, params)
 
-    async def fetchone(self, sql: str, params: Sequence = {}) -> tuple:
+    async def fetchone(self, sql: str, params: Sequence = ()) -> tuple:
         async with self.acquire() as conn:
             return await conn.fetchone(sql, params)
 
-    async def fetchall(self, sql: str, params: Sequence = {}) -> tuple:
+    async def fetchall(self, sql: str, params: Sequence = ()) -> tuple:
         async with self.acquire() as conn:
             return await conn.fetchall(sql, params)
 
