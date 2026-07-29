@@ -654,6 +654,36 @@ async def test_read_only_valid_file(tmpfile_store):
     store.close()
 
 
+@pytest.mark.asyncio
+async def test_reuse_after_close(tmpfile_store):
+    """A file-based SQLiteStore can be re-used after close().
+
+    The data written before close() must persist, and new operations must
+    work after the store is implicitly re-opened.
+    """
+    # Write data before closing
+    await tmpfile_store.set("a", make_buffer(b"first"))
+    await tmpfile_store.set("b", make_buffer(b"second"))
+
+    # Close the store
+    tmpfile_store.close()
+
+    # Re-use the store: an operation triggers _ensure_open -> _open,
+    # which creates a new connection pool and re-creates/validates the schema.
+    assert await get_as_bytes(tmpfile_store, "a") == b"first"
+    assert await get_as_bytes(tmpfile_store, "b") == b"second"
+
+    # New writes must also work after re-open
+    await tmpfile_store.set("c", make_buffer(b"third"))
+    assert await get_as_bytes(tmpfile_store, "c") == b"third"
+
+    # Listing must reflect all keys
+    keys = set(await collect(tmpfile_store.list()))
+    assert keys == {"a", "b", "c"}
+
+    tmpfile_store.close()
+
+
 # ---------------------------------------------------------------------------
 # Case sensitivity tests
 # ---------------------------------------------------------------------------
