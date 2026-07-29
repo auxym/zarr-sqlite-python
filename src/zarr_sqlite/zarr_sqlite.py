@@ -67,10 +67,10 @@ class SQLiteStore(Store):
     root
     """
 
-    database_uri: str
+    _database_uri: str
     _is_open: bool
     _open_lock: asyncio.Lock
-    _pool: AsyncConnectionPool | None
+    _pool: AsyncConnectionPool
     _journal_mode: str | None
     _page_size: int
 
@@ -98,11 +98,15 @@ class SQLiteStore(Store):
         page_size: int = 4096,
     ) -> None:
         super().__init__(read_only=read_only)
-        self.database_uri = self._build_database_uri(database, read_only=read_only)
+        self._database_uri = self._build_database_uri(database, read_only=read_only)
         self._journal_mode = journal_mode
         self._page_size = page_size
-        self._pool = None
+        self._pool = AsyncConnectionPool(self.database_uri, read_only=read_only)
         self._open_lock = asyncio.Lock()
+
+    @property
+    def database_uri(self):
+        return self._database_uri
 
     @staticmethod
     def _build_database_uri(database: Path | str, read_only: bool) -> str:
@@ -170,7 +174,7 @@ class SQLiteStore(Store):
 
     @override
     def with_read_only(self, read_only: bool = False) -> Self:
-        return SQLiteStore(self.database_uri, read_only=read_only)
+        return type(self)(self.database_uri, read_only=read_only)
 
     async def _create_schema(self, conn: PooledConnection) -> None:
         if self._journal_mode is not None:
@@ -265,7 +269,6 @@ class SQLiteStore(Store):
         try:
             self._pool.close()
         finally:
-            self._pool = None
             self._is_open = False
 
     @staticmethod
@@ -458,6 +461,12 @@ class SQLiteStore(Store):
 
     @override
     async def list_dir(self, prefix: str) -> AsyncIterator[str]:
+        if prefix != "" and not prefix[-1] == "/":
+            # Even though prefix will be normalized in list_prefix(), this is
+            # required for the removeprefix(prefix) call used below.
+            prefix += "/"
+
+        # _ensure_open is called in list_prefix()
         seen: set[str] = set()
         async for full_key in self.list_prefix(prefix):
             rel_key = full_key.removeprefix(prefix)
