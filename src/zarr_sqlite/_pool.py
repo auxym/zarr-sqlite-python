@@ -305,10 +305,13 @@ class AsyncConnectionPool:
         try:
             yield conn
         finally:
-            try:
-                await conn.rollback()
-            finally:
-                await self._available.put(conn)
+            # Don't attempt rollback if we are closed, the connection
+            # will likely be closed and it will fail.
+            if self._is_open:
+                try:
+                    await conn.rollback()
+                finally:
+                    await self._available.put(conn)
 
     @asynccontextmanager
     async def acquire_write(self) -> AsyncGenerator[PooledConnection, None]:
@@ -335,14 +338,20 @@ class AsyncConnectionPool:
             try:
                 yield conn
             except BaseException:
-                await conn.rollback()
+                # Don't attempt rollback if we are closed, the connection
+                # will likely be closed and it will fail.
+                if self._is_open:
+                    await conn.rollback()
                 raise
             else:
-                try:
-                    await conn.commit()
-                except BaseException:
-                    await conn.rollback()
-                    raise
+                # Don't attempt rollback/commit if we are closed, the connection
+                # will likely be closed and it will fail.
+                if self._is_open:
+                    try:
+                        await conn.commit()
+                    except BaseException:
+                        await conn.rollback()
+                        raise
             finally:
                 await self._available.put(conn)
 
@@ -424,8 +433,14 @@ class AsyncConnectionPool:
     def close(self) -> None:
         """Close the connection pool and all connections.
 
-        This method closes all connections in the pool, including the writer
-        connection. After calling close(), the pool cannot be used again.
+        Calling close() closes all SQLite connections immediately. SQLite will
+        perform its normal connection cleanup, including rolling back
+        uncommitted transactions and performing the normal WAL close-time
+        checkpoint behavior when the last connection closes. Any in-flight
+        operations using those connections may fail and callers must ensure that
+        all operations have completed before closing the store.
+
+        After calling close(), the pool cannot be used again.
         """
         if not self.is_open:
             return
