@@ -238,10 +238,13 @@ class AsyncConnectionPool:
         self._creation_lock = asyncio.Lock()
         self._acquire_timeout = acquire_timeout
 
-        if not self._read_only:
-            self._writer_connection = PooledConnection(self._create_connection_sync())
-        else:
-            self._writer_connection = None
+        # TODO: actually do URI parsing here
+        # For in-memory databases we limit to 1 connection. :memory: can never be
+        # shared, and shared-cached databases causes concurrency issues with
+        # blobs that take locks on entire tables.
+        is_in_memory = uri == ":memory:" or (uri.startswith("file:") and "mode=memory" in uri)
+        if is_in_memory:
+            self._max_connections = 1
 
     @property
     def is_open(self) -> bool:
@@ -253,36 +256,32 @@ class AsyncConnectionPool:
         """Whether the pool is in read-only mode."""
         return self._read_only
 
-    def _create_connection_sync(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(
+    async def _create_connection(self) -> PooledConnection:
+        conn = await asyncio.to_thread(
+            sqlite3.connect,
             self._uri,
             uri=True,
             autocommit=False,
             check_same_thread=False,
         )
-        return conn
-
-    async def _create_connection(self) -> PooledConnection:
-        conn = await asyncio.to_thread(self._create_connection_sync)
         self._raw_connections.append(conn)
         return PooledConnection(conn)
 
-    @asynccontextmanager
-    async def _writer_lock_timeout(self) -> AsyncGenerator[None, None]:
-        """Acquire the writer lock with a timeout."""
+    async def _get_connection(self):
         try:
-            await asyncio.wait_for(
-                self._writer_lock.acquire(), timeout=self._acquire_timeout
-            )
-        except asyncio.TimeoutError:
-            raise TimeoutError(
-                "Timed out waiting for writer connection to become available"
-            )
+            conn = self._available.get_nowait()
+        except asyncio.QueueEmpty:
+            # Lazily create a new connection if we haven't reached max number of
+            # connections. Otherwise, wait for a connection to become available.
+            async with self._creation_lock:
+                if len(self._raw_connections) < self._max_connections:
+                    conn = await self._create_connection()
+                else:
+                    conn = await asyncio.wait_for(
+                        self._available.get(), timeout=self._acquire_timeout
+                    )
 
-        try:
-            yield
-        finally:
-            self._writer_lock.release()
+        return conn
 
     @asynccontextmanager
     async def acquire(self) -> AsyncGenerator[PooledConnection, None]:
@@ -301,19 +300,8 @@ class AsyncConnectionPool:
         """
         if not self.is_open:
             raise ValueError("Connection pool is closed.")
-        try:
-            conn = self._available.get_nowait()
-        except asyncio.QueueEmpty:
-            # Lazily create a new connection if we haven't reached max number of
-            # connections. Otherwise, wait for a connection to become available.
-            async with self._creation_lock:
-                if len(self._raw_connections) < self._max_connections:
-                    conn = await self._create_connection()
-                else:
-                    conn = await asyncio.wait_for(
-                        self._available.get(), timeout=self._acquire_timeout
-                    )
 
+        conn = await self._get_connection()
         try:
             yield conn
         finally:
@@ -340,20 +328,23 @@ class AsyncConnectionPool:
             raise ValueError("Connection pool is closed.")
         if self.read_only:
             raise ValueError("Connection pool is read-only.")
-        assert self._writer_connection is not None
 
-        async with self._writer_lock_timeout():
+        # Use a lock to limit to a single active writer connection
+        async with self._writer_lock:
+            conn = await self._get_connection()
             try:
-                yield self._writer_connection
+                yield conn
             except BaseException:
-                await self._writer_connection.rollback()
+                await conn.rollback()
                 raise
             else:
                 try:
-                    await self._writer_connection.commit()
+                    await conn.commit()
                 except BaseException:
-                    await self._writer_connection.rollback()
+                    await conn.rollback()
                     raise
+            finally:
+                await self._available.put(conn)
 
     async def execute_write(self, sql: str, params: Sequence[Any] = ()) -> None:
         """Execute a write SQL statement and commit afterwards.
@@ -440,12 +431,6 @@ class AsyncConnectionPool:
             return
         self._is_open = False
 
-        if self._writer_connection is not None:
-            try:
-                self._writer_connection.close()
-            except Exception:
-                pass
-
         for conn in self._raw_connections:
             try:
                 conn.close()
@@ -453,4 +438,3 @@ class AsyncConnectionPool:
                 pass
 
         self._raw_connections = []
-        self._writer_connection = None

@@ -153,7 +153,15 @@ async def test_get_unsupported_byte_range(store):
 
 
 @pytest.mark.asyncio
-async def test_get_partial_values(store):
+@pytest.mark.parametrize("store_fixture", ["store", "tmpfile_store"])
+async def test_get_partial_values(request, store_fixture):
+    """We run this both in-memory and with a file because the blob
+    handle used for the partial request can cause concurrency issues
+    (sqlite3 OperationalError: table locked) with shared cache in-memory
+    databases. For this reason, the connection pool should be limited
+    to 1 connection for in-memory databases.
+    """
+    store = request.getfixturevalue(store_fixture)
     await store.set("a", make_buffer(b"0123456789"))
     await store.set("b", make_buffer(b"ABCDEFGHIJ"))
     results = await store.get_partial_values(
