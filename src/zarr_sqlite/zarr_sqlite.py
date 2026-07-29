@@ -1,10 +1,10 @@
+import urllib
 from typing import override, Self
 from collections.abc import Iterable, AsyncIterator
 import datetime
 import sqlite3
 from pathlib import Path
 import urllib.parse
-import uuid
 import asyncio
 
 from zarr.core.buffer import BufferPrototype, Buffer
@@ -19,6 +19,7 @@ from zarr.abc.store import (
 
 from ._version import __version__
 from ._pool import AsyncConnectionPool, PooledConnection
+from ._db_utils import is_database_uri, is_in_memory_database
 
 if sqlite3.threadsafety not in {1, 3}:
     raise ImportError(
@@ -67,7 +68,7 @@ class SQLiteStore(Store):
     root
     """
 
-    _database_uri: str
+    _database: str
     _is_open: bool
     _open_lock: asyncio.Lock
     _pool: AsyncConnectionPool
@@ -98,57 +99,59 @@ class SQLiteStore(Store):
         page_size: int = 4096,
     ) -> None:
         super().__init__(read_only=read_only)
-        self._database_uri = self._build_database_uri(database, read_only=read_only)
+        self._database = str(database)
         self._journal_mode = journal_mode
         self._page_size = page_size
-        self._pool = AsyncConnectionPool(self.database_uri, read_only=read_only)
+        self._pool = AsyncConnectionPool(self.database, read_only=read_only)
         self._open_lock = asyncio.Lock()
 
+        if self.is_in_memory() and read_only:
+            raise ValueError("In-memory databases cannot be opened read-only")
+
+        # To open a database in read-only mode in python, we need to use
+        # a SQLite URI.
+        if read_only:
+            self._database = self._database_as_uri(self.database, read_only)
+
     @property
-    def database_uri(self):
-        return self._database_uri
+    def database(self):
+        return self._database
+
+    def is_in_memory(self) -> bool:
+        return is_in_memory_database(self._database)
 
     @staticmethod
-    def _build_database_uri(database: Path | str, read_only: bool) -> str:
-        """Create a sqlite-compatible URI string from a user-provided path or string.
+    def _database_as_uri(database: str, read_only: bool) -> str:
+        """Create a sqlite-compatible database URI.
 
-        database may be either:
-            - A Path object
-            - The string ":memory:" for an in-memory database
-            - A valid (sqlite compatible) filename URI
-
-        If a URI is passed in, the `mode` query parameter will be modified, if
-        present, according to `read_only`. Other query parameters will be left
-        unmodified.
-
-        Ref: https://sqlite.org/uri.html
+        Parameters
+        ----------
+        database : str
+            File path or  sqlite-compatible URI (must have `file:` scheme). If
+            `database` is a URI, the parameters will be kept unmodified, except
+            "mode", which will always be overwritten or added base on the value
+            of `read_only`.
+        read_only : bool
+            Whether the store is read-only
         """
 
-        query = {"mode": ["ro"] if read_only else ["rwc"]}
-        uri_path = ""
+        if not is_database_uri(database):
+            database = Path(database).absolute().as_uri()
+        uri_parts = urllib.parse.urlsplit(database)
 
-        if isinstance(database, Path):
-            uri_path = database.resolve().as_uri().removeprefix("file://")
-        elif database == ":memory:":
-            # In-memory databases cannot be opened in read-only mode
-            if read_only:
-                raise ValueError("Cannot open an in-memory database in read-only mode.")
-            # Generate a unique ID for the in-memory database
-            uri_path = "mem-" + str(uuid.uuid4())
-            query["mode"] = ["memory"]
-            query["cache"] = ["shared"]
-        elif not database.startswith("file:"):
-            # If the database is not a URI and not in-memory, we assume it's a file path
-            uri_path = Path(database).resolve().as_uri().removeprefix("file://")
-        else:
-            # If we get here, assume that database is a uri string.
-            # Extract the path and query, keep the query as is except for mode, which is set
-            # based on read_only.
-            parsed = urllib.parse.urlparse(database)
-            uri_path = parsed.path
-            query = urllib.parse.parse_qs(parsed.query) | query
+        query = urllib.parse.parse_qs(uri_parts.query)
+        mode = "ro" if read_only else "rwc"
+        query["mode"] = [mode]
 
-        return f"file:{uri_path}?{urllib.parse.urlencode(query, doseq=True)}"
+        return urllib.parse.urlunsplit(
+            urllib.parse.SplitResult(
+                scheme=uri_parts.scheme,
+                netloc='',
+                path=uri_parts.path,
+                query=urllib.parse.urlencode(query, doseq=True),
+                fragment=''
+            )
+        )
 
     @override
     async def _ensure_open(self):
@@ -168,7 +171,7 @@ class SQLiteStore(Store):
         # Connection pool cannot be reused, if it was closed, we need to create
         # a new one.
         if not self._pool.is_open:
-            self._pool = AsyncConnectionPool(self.database_uri, read_only=self._read_only)
+            self._pool = AsyncConnectionPool(self.database, read_only=self._read_only)
 
         if not self._read_only:
             async with self._pool.acquire_write() as conn:
@@ -178,7 +181,9 @@ class SQLiteStore(Store):
 
     @override
     def with_read_only(self, read_only: bool = False) -> Self:
-        return type(self)(self.database_uri, read_only=read_only)
+        if self.is_in_memory():
+            raise ValueError("Cannot create a read-only view of an in-memory database.")
+        return type(self)(self.database, read_only=read_only)
 
     async def _create_schema(self, conn: PooledConnection) -> None:
         if self._journal_mode is not None:
@@ -335,11 +340,11 @@ class SQLiteStore(Store):
 
     @override
     def __str__(self) -> str:
-        return f"sqlite://{self.database_uri}"
+        return repr(self)
 
     @override
     def __repr__(self) -> str:
-        return f"SQLiteStore('{self}')"
+        return f"SQLiteStore('{self._database}')"
 
     @override
     def __eq__(self, other: object) -> bool:
@@ -347,9 +352,10 @@ class SQLiteStore(Store):
         if not isinstance(other, type(self)):
             return False
 
-        parsed_uri_self = urllib.parse.urlparse(self.database_uri)
-        parsed_uri_other = urllib.parse.urlparse(other.database_uri)
-        return parsed_uri_other.path == parsed_uri_self.path
+        if self.is_in_memory() or other.is_in_memory():
+            return False
+
+        return self.database == other.database
 
     async def _get_partial_blob(
         self, key: str, byte_range: ByteRequest

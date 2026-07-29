@@ -16,6 +16,7 @@ from zarr_sqlite.zarr_sqlite import (
 )
 
 from tempfile import NamedTemporaryFile
+from pathlib import Path
 
 
 def make_buffer(data: bytes, prototype: BufferPrototype | None = None) -> object:
@@ -134,13 +135,13 @@ async def test_get_suffix_larger_than_length(store):
 
 
 @pytest.mark.asyncio
-async def test_get_non_bytes(store):
-    await store.set("dummy", make_buffer(b"data"))
-    con = sqlite3.connect(store.database_uri, uri=True)
+async def test_get_non_bytes(tmpfile_store):
+    await tmpfile_store.set("dummy", make_buffer(b"data"))
+    con = sqlite3.connect(tmpfile_store.database, uri=True)
     con.execute("INSERT INTO zarr (k, v) VALUES (?, ?)", ("k", 5))
     con.commit()
     con.close()
-    assert await store.get("k", default_buffer_prototype()) is None
+    assert await tmpfile_store.get("k", default_buffer_prototype()) is None
 
 
 @pytest.mark.asyncio
@@ -157,9 +158,9 @@ async def test_get_unsupported_byte_range(store):
 async def test_get_partial_values(request, store_fixture):
     """We run this both in-memory and with a file because the blob
     handle used for the partial request can cause concurrency issues
-    (sqlite3 OperationalError: table locked) with shared cache in-memory
-    databases. For this reason, the connection pool should be limited
-    to 1 connection for in-memory databases.
+    (sqlite3 OperationalError: table locked) with in-memory databases.
+    For this reason, the connection pool is limited to 1 connection
+    for in-memory databases.
     """
     store = request.getfixturevalue(store_fixture)
     await store.set("a", make_buffer(b"0123456789"))
@@ -414,11 +415,85 @@ async def test_with_read_only(tmpfile_store):
     ro.close()
 
 
+def test_eq_in_memory():
+    """In-memory databases are unique, so __eq__ always returns False."""
+    s1 = SQLiteStore(":memory:")
+    s2 = SQLiteStore(":memory:")
+    try:
+        assert s1 != s2
+        assert s1 != "not a store"
+    finally:
+        s1.close()
+        s2.close()
+
+
+def test_memory_kept_as_is():
+    """:memory: is kept as-is, not converted to a URI."""
+    s = SQLiteStore(":memory:")
+    try:
+        assert s.database == ":memory:"
+    finally:
+        s.close()
+
+
+def test_non_read_only_keeps_string():
+    """Non-read-only stores keep the user's database string unmodified."""
+    s = SQLiteStore("foo.db")
+    try:
+        assert s.database == "foo.db"
+    finally:
+        s.close()
+
+
+def test_non_read_only_keeps_path_string():
+    """Non-read-only stores convert Path to str but keep the path unmodified."""
+    s = SQLiteStore(Path("foo.db"))
+    try:
+        assert s.database == "foo.db"
+    finally:
+        s.close()
+
+
+def test_read_only_converts_to_uri(tmp_path):
+    """Read-only stores convert the database to a URI with mode=ro."""
+    db = tmp_path / "test.db"
+    s = SQLiteStore(db, read_only=True)
+    try:
+        assert s.database.startswith("file:")
+        assert "mode=ro" in s.database
+    finally:
+        s.close()
+
+
+def test_with_read_only_in_memory_raises():
+    """with_read_only raises for in-memory databases."""
+    s = SQLiteStore(":memory:")
+    try:
+        with pytest.raises(ValueError, match="read-only view"):
+            s.with_read_only(read_only=True)
+    finally:
+        s.close()
+
+
+@pytest.mark.asyncio
+async def test_in_memory_isolates_data():
+    """Two in-memory stores do not share data."""
+    s1 = SQLiteStore(":memory:")
+    s2 = SQLiteStore(":memory:")
+    try:
+        await s1.set("key", make_buffer(b"data1"))
+        assert await s1.get("key", default_buffer_prototype()) is not None
+        assert await s2.get("key", default_buffer_prototype()) is None
+    finally:
+        s1.close()
+        s2.close()
+
+
 @pytest.mark.asyncio
 async def test_read_only_raises(tmpfile_store):
     await tmpfile_store.set("a", make_buffer(b"data"))
     tmpfile_store.close()
-    store = SQLiteStore(tmpfile_store.database_uri, read_only=True)
+    store = SQLiteStore(tmpfile_store.database, read_only=True)
 
     with pytest.raises(ValueError):
         await store.delete("a")
@@ -456,10 +531,10 @@ def test_validate_key_rejects_leading_slash():
 
 
 @pytest.mark.asyncio
-async def test_schema_tables_exist(store):
+async def test_schema_tables_exist(tmpfile_store):
     """Both required tables are created on first use."""
-    await store.set("key", make_buffer(b"data"))
-    con = sqlite3.connect(store.database_uri, uri=True)
+    await tmpfile_store.set("key", make_buffer(b"data"))
+    con = sqlite3.connect(tmpfile_store.database, uri=True)
     cur = con.execute("SELECT name FROM sqlite_master WHERE type='table'")
     tables = {row[0] for row in cur.fetchall()}
     con.close()
@@ -468,10 +543,10 @@ async def test_schema_tables_exist(store):
 
 
 @pytest.mark.asyncio
-async def test_schema_not_null_constraints(store):
+async def test_schema_not_null_constraints(tmpfile_store):
     """Both k and v columns in both tables have NOT NULL."""
-    await store.set("key", make_buffer(b"data"))
-    con = sqlite3.connect(store.database_uri, uri=True)
+    await tmpfile_store.set("key", make_buffer(b"data"))
+    con = sqlite3.connect(tmpfile_store.database, uri=True)
     for table in ("zarr", "sqlitestore_metadata"):
         cur = con.execute(f"PRAGMA table_info({table})")
         for row in cur.fetchall():
@@ -482,20 +557,20 @@ async def test_schema_not_null_constraints(store):
 
 
 @pytest.mark.asyncio
-async def test_schema_application_id(store):
+async def test_schema_application_id(tmpfile_store):
     """application_id is set to the spec value."""
-    await store.set("key", make_buffer(b"data"))
-    con = sqlite3.connect(store.database_uri, uri=True)
+    await tmpfile_store.set("key", make_buffer(b"data"))
+    con = sqlite3.connect(tmpfile_store.database, uri=True)
     cur = con.execute("PRAGMA application_id")
     assert cur.fetchone()[0] == _SQLITESTORE_APPLICATION_ID
     con.close()
 
 
 @pytest.mark.asyncio
-async def test_metadata_required_records(store):
+async def test_metadata_required_records(tmpfile_store):
     """All required metadata records exist with correct values."""
-    await store.set("key", make_buffer(b"data"))
-    con = sqlite3.connect(store.database_uri, uri=True)
+    await tmpfile_store.set("key", make_buffer(b"data"))
+    con = sqlite3.connect(tmpfile_store.database, uri=True)
     cur = con.execute("SELECT k, v FROM sqlitestore_metadata")
     metadata = dict(cur.fetchall())
     con.close()
@@ -507,10 +582,10 @@ async def test_metadata_required_records(store):
 
 
 @pytest.mark.asyncio
-async def test_metadata_created_by(store):
+async def test_metadata_created_by(tmpfile_store):
     """created_by contains the package name."""
-    await store.set("key", make_buffer(b"data"))
-    con = sqlite3.connect(store.database_uri, uri=True)
+    await tmpfile_store.set("key", make_buffer(b"data"))
+    con = sqlite3.connect(tmpfile_store.database, uri=True)
     cur = con.execute("SELECT v FROM sqlitestore_metadata WHERE k = 'created_by'")
     created_by = cur.fetchone()[0]
     con.close()
@@ -518,10 +593,10 @@ async def test_metadata_created_by(store):
 
 
 @pytest.mark.asyncio
-async def test_metadata_created_time(store):
+async def test_metadata_created_time(tmpfile_store):
     """created_time is a valid ISO 8601 timestamp within the last 5 minutes."""
-    await store.set("key", make_buffer(b"data"))
-    con = sqlite3.connect(store.database_uri, uri=True)
+    await tmpfile_store.set("key", make_buffer(b"data"))
+    con = sqlite3.connect(tmpfile_store.database, uri=True)
     cur = con.execute("SELECT v FROM sqlitestore_metadata WHERE k = 'created_time'")
     created_time = datetime.datetime.fromisoformat(cur.fetchone()[0])
     con.close()
@@ -540,12 +615,12 @@ async def test_validate_missing_zarr_table(tmpfile_store):
     await tmpfile_store.set("key", make_buffer(b"data"))
     tmpfile_store.close()
 
-    con = sqlite3.connect(tmpfile_store.database_uri, uri=True)
+    con = sqlite3.connect(tmpfile_store.database, uri=True)
     con.execute("DROP TABLE zarr")
     con.commit()
     con.close()
 
-    store = SQLiteStore(tmpfile_store.database_uri, read_only=True)
+    store = SQLiteStore(tmpfile_store.database, read_only=True)
     with pytest.raises(ValueError, match="missing required table 'zarr'"):
         await store.exists("key")
 
@@ -556,12 +631,12 @@ async def test_validate_missing_metadata_table(tmpfile_store):
     await tmpfile_store.set("key", make_buffer(b"data"))
     tmpfile_store.close()
 
-    con = sqlite3.connect(tmpfile_store.database_uri, uri=True)
+    con = sqlite3.connect(tmpfile_store.database, uri=True)
     con.execute("DROP TABLE sqlitestore_metadata")
     con.commit()
     con.close()
 
-    store = SQLiteStore(tmpfile_store.database_uri, read_only=True)
+    store = SQLiteStore(tmpfile_store.database, read_only=True)
     with pytest.raises(
         ValueError, match="missing required table 'sqlitestore_metadata'"
     ):
@@ -574,12 +649,12 @@ async def test_validate_missing_metadata_record(tmpfile_store):
     await tmpfile_store.set("key", make_buffer(b"data"))
     tmpfile_store.close()
 
-    con = sqlite3.connect(tmpfile_store.database_uri, uri=True)
+    con = sqlite3.connect(tmpfile_store.database, uri=True)
     con.execute("DELETE FROM sqlitestore_metadata WHERE k = 'sqlitestore_version'")
     con.commit()
     con.close()
 
-    store = SQLiteStore(tmpfile_store.database_uri, read_only=True)
+    store = SQLiteStore(tmpfile_store.database, read_only=True)
     with pytest.raises(
         ValueError, match="missing required metadata entry 'sqlitestore_version'"
     ):
@@ -592,14 +667,14 @@ async def test_validate_invalid_version(tmpfile_store):
     await tmpfile_store.set("key", make_buffer(b"data"))
     tmpfile_store.close()
 
-    con = sqlite3.connect(tmpfile_store.database_uri, uri=True)
+    con = sqlite3.connect(tmpfile_store.database, uri=True)
     con.execute(
         "UPDATE sqlitestore_metadata SET v = 'invalid' WHERE k = 'sqlitestore_version'"
     )
     con.commit()
     con.close()
 
-    store = SQLiteStore(tmpfile_store.database_uri, read_only=True)
+    store = SQLiteStore(tmpfile_store.database, read_only=True)
     with pytest.raises(ValueError, match="Invalid sqlitestore_version"):
         await store.exists("key")
 
@@ -610,14 +685,14 @@ async def test_validate_unsupported_major_version(tmpfile_store):
     await tmpfile_store.set("key", make_buffer(b"data"))
     tmpfile_store.close()
 
-    con = sqlite3.connect(tmpfile_store.database_uri, uri=True)
+    con = sqlite3.connect(tmpfile_store.database, uri=True)
     con.execute(
         "UPDATE sqlitestore_metadata SET v = '2.0' WHERE k = 'sqlitestore_version'"
     )
     con.commit()
     con.close()
 
-    store = SQLiteStore(tmpfile_store.database_uri, read_only=True)
+    store = SQLiteStore(tmpfile_store.database, read_only=True)
     with pytest.raises(ValueError, match="Unsupported sqlitestore_version"):
         await store.exists("key")
 
@@ -628,7 +703,7 @@ async def test_validate_unknown_incompatible_flag(tmpfile_store):
     await tmpfile_store.set("key", make_buffer(b"data"))
     tmpfile_store.close()
 
-    con = sqlite3.connect(tmpfile_store.database_uri, uri=True)
+    con = sqlite3.connect(tmpfile_store.database, uri=True)
     con.execute(
         "UPDATE sqlitestore_metadata SET v = 'unknown_flag' "
         "WHERE k = 'incompatible_flags'"
@@ -636,7 +711,7 @@ async def test_validate_unknown_incompatible_flag(tmpfile_store):
     con.commit()
     con.close()
 
-    store = SQLiteStore(tmpfile_store.database_uri, read_only=True)
+    store = SQLiteStore(tmpfile_store.database, read_only=True)
     with pytest.raises(
         ValueError, match="SQLiteStore flag 'unknown_flag' is not supported"
     ):
@@ -649,7 +724,7 @@ async def test_read_only_valid_file(tmpfile_store):
     await tmpfile_store.set("key", make_buffer(b"data"))
     tmpfile_store.close()
 
-    store = SQLiteStore(tmpfile_store.database_uri, read_only=True)
+    store = SQLiteStore(tmpfile_store.database, read_only=True)
     assert await get_as_bytes(store, "key") == b"data"
     store.close()
 

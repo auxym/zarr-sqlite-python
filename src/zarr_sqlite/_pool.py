@@ -6,6 +6,8 @@ from contextlib import asynccontextmanager
 
 from typing import Sequence, AsyncGenerator, Any
 
+from ._db_utils import is_database_uri, is_in_memory_database
+
 
 class AsyncBlob:
     """Async wrapper for SQLite blob objects.
@@ -206,7 +208,7 @@ class AsyncConnectionPool:
     _writer_connection: PooledConnection | None
     _writer_lock: asyncio.Lock
     _creation_lock: asyncio.Lock
-    _uri: str
+    _database: str
     _is_open: bool
     _raw_connections: list[sqlite3.Connection]
     _max_connections: int
@@ -215,7 +217,7 @@ class AsyncConnectionPool:
 
     def __init__(
         self,
-        uri: str,
+        database: str,
         n_connections: int = 10,
         read_only: bool = False,
         acquire_timeout: float = 5.0,
@@ -223,14 +225,14 @@ class AsyncConnectionPool:
         """Initialize the connection pool.
 
         Args:
-            uri: The SQLite database URI.
+            database: The SQLite database specifier (path, URI, or ":memory:").
             n_connections: Maximum number of read connections in the pool.
             read_only: If True, the pool will not create a writer connection.
             acquire_timeout: Timeout in seconds for acquiring a connection.
         """
         self._writer_lock = asyncio.Lock()
         self._available = asyncio.Queue()
-        self._uri = uri
+        self._database = database
         self._is_open = True
         self._raw_connections = []
         self._max_connections = n_connections
@@ -238,11 +240,10 @@ class AsyncConnectionPool:
         self._creation_lock = asyncio.Lock()
         self._acquire_timeout = acquire_timeout
 
-        # TODO: actually do URI parsing here
-        # For in-memory databases we limit to 1 connection. :memory: can never be
-        # shared, and shared-cached databases causes concurrency issues with
-        # blobs that take locks on entire tables.
-        is_in_memory = uri == ":memory:" or (uri.startswith("file:") and "mode=memory" in uri)
+        # For in-memory databases we limit to 1 connection. Each :memory:
+        # connection gets its own private database, so all operations must
+        # share the same connection.
+        is_in_memory = is_in_memory_database(database)
         if is_in_memory:
             self._max_connections = 1
 
@@ -259,8 +260,8 @@ class AsyncConnectionPool:
     async def _create_connection(self) -> PooledConnection:
         conn = await asyncio.to_thread(
             sqlite3.connect,
-            self._uri,
-            uri=True,
+            self._database,
+            uri=is_database_uri(self._database),
             autocommit=False,
             check_same_thread=False,
         )
