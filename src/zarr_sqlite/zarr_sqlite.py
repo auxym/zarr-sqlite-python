@@ -165,7 +165,11 @@ class SQLiteStore(Store):
         if self._is_open:
             raise ValueError("store is already open")
 
-        self._pool = AsyncConnectionPool(self.database_uri, read_only=self._read_only)
+        # Connection pool cannot be reused, if it was closed, we need to create
+        # a new one.
+        if not self._pool.is_open:
+            self._pool = AsyncConnectionPool(self.database_uri, read_only=self._read_only)
+
         if not self._read_only:
             async with self._pool.acquire_write() as conn:
                 await self._create_schema(conn)
@@ -263,13 +267,19 @@ class SQLiteStore(Store):
 
     @override
     def close(self) -> None:
+        """Immediately close the store and all SQLite connections.
+
+        Calling close() closes all SQLite connections immediately. SQLite will
+        perform its normal connection cleanup, including rolling back
+        uncommitted transactions and performing the normal WAL close-time
+        checkpoint behavior when the last connection closes. Any in-flight
+        operations using those connections may fail and callers must ensure that
+        all operations have completed before closing the store.
+        """
         if not self._is_open:
             return
-
-        try:
-            self._pool.close()
-        finally:
-            self._is_open = False
+        self._is_open = False
+        self._pool.close()
 
     @staticmethod
     def _get_text_boundaries(prefix: str) -> tuple[str, str]:
