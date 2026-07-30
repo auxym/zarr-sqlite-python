@@ -1,62 +1,21 @@
-"""Unit tests for the public API of SQLiteStore."""
+"""Unit tests for the fundamental store interface of SQLiteStore."""
 
-import datetime
-import os
 import sqlite3
 
 import pytest
-from zarr.core.buffer import BufferPrototype, default_buffer_prototype
+from zarr.core.buffer import default_buffer_prototype
 from zarr.abc.store import OffsetByteRequest, RangeByteRequest, SuffixByteRequest
 
 from zarr_sqlite import SQLiteStore
-from zarr_sqlite.zarr_sqlite import (
-    _validate_key,
-    _SQLITESTORE_SPEC_VERSION,
-    _SQLITESTORE_APPLICATION_ID,
-)
-
-from tempfile import NamedTemporaryFile
-from pathlib import Path
 
 
-def make_buffer(data: bytes, prototype: BufferPrototype | None = None) -> object:
-    prototype = prototype or default_buffer_prototype()
-    return prototype.buffer.from_bytes(data)
-
-
-async def collect(iterator):
-    return [item async for item in iterator]
-
-
-async def get_as_bytes(s: SQLiteStore, key: str) -> bytes | None:
-    buf = await s.get(key, default_buffer_prototype())
-    if buf is None:
-        return None
-    return buf.to_bytes()
-
-
-@pytest.fixture
-def store():
-    s = SQLiteStore(":memory:")
-    yield s
-    s.close()
-
-
-@pytest.fixture
-def tmpfile_store():
-    fp = NamedTemporaryFile(suffix=".db", delete=False)
-    fp.close()
-    s = SQLiteStore(fp.name)
-    yield s
-    s.close()
-    try:
-        os.unlink(fp.name)
-    except PermissionError:
-        pass
+# ---------------------------------------------------------------------------
+# Core get/set tests
+# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_set_and_get(store):
+async def test_set_and_get(store, make_buffer):
     data = b"hello world"
     await store.set("foo", make_buffer(data))
     buf = await store.get("foo", default_buffer_prototype())
@@ -70,7 +29,7 @@ async def test_get_nonexistent(store):
 
 
 @pytest.mark.asyncio
-async def test_get_offset_byte_request(store):
+async def test_get_offset_byte_request(store, make_buffer):
     data = b"abcdefghij"
     await store.set("k", make_buffer(data))
     buf = await store.get(
@@ -80,7 +39,7 @@ async def test_get_offset_byte_request(store):
 
 
 @pytest.mark.asyncio
-async def test_get_offset_beyond_length(store):
+async def test_get_offset_beyond_length(store, make_buffer):
     data = b"abc"
     await store.set("k", make_buffer(data))
     buf = await store.get(
@@ -90,7 +49,7 @@ async def test_get_offset_beyond_length(store):
 
 
 @pytest.mark.asyncio
-async def test_get_range_byte_request(store):
+async def test_get_range_byte_request(store, make_buffer):
     data = b"abcdefghij"
     await store.set("k", make_buffer(data))
     buf = await store.get(
@@ -102,7 +61,7 @@ async def test_get_range_byte_request(store):
 
 
 @pytest.mark.asyncio
-async def test_get_range_clamped(store):
+async def test_get_range_clamped(store, make_buffer):
     data = b"abcdefghijkl"
     await store.set("k", make_buffer(data))
     buf = await store.get(
@@ -114,7 +73,7 @@ async def test_get_range_clamped(store):
 
 
 @pytest.mark.asyncio
-async def test_get_suffix_byte_request(store):
+async def test_get_suffix_byte_request(store, make_buffer):
     data = b"abcdefghij"
     await store.set("k", make_buffer(data))
     buf = await store.get(
@@ -125,7 +84,7 @@ async def test_get_suffix_byte_request(store):
 
 
 @pytest.mark.asyncio
-async def test_get_suffix_larger_than_length(store):
+async def test_get_suffix_larger_than_length(store, make_buffer):
     data = b"abc"
     await store.set("k", make_buffer(data))
     buf = await store.get(
@@ -135,7 +94,7 @@ async def test_get_suffix_larger_than_length(store):
 
 
 @pytest.mark.asyncio
-async def test_get_non_bytes(tmpfile_store):
+async def test_get_non_bytes(tmpfile_store, make_buffer):
     await tmpfile_store.set("dummy", make_buffer(b"data"))
     con = sqlite3.connect(tmpfile_store.database, uri=True)
     con.execute("INSERT INTO zarr (k, v) VALUES (?, ?)", ("k", 5))
@@ -145,7 +104,7 @@ async def test_get_non_bytes(tmpfile_store):
 
 
 @pytest.mark.asyncio
-async def test_get_unsupported_byte_range(store):
+async def test_get_unsupported_byte_range(store, make_buffer):
     data = b"abc"
     await store.set("k", make_buffer(data))
     bad = object()
@@ -155,7 +114,7 @@ async def test_get_unsupported_byte_range(store):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("store_fixture", ["store", "tmpfile_store"])
-async def test_get_partial_values(request, store_fixture):
+async def test_get_partial_values(request, store_fixture, make_buffer):
     """We run this both in-memory and with a file because the blob
     handle used for the partial request can cause concurrency issues
     (sqlite3 OperationalError: table locked) with in-memory databases.
@@ -178,8 +137,13 @@ async def test_get_partial_values(request, store_fixture):
     assert results[2] is None
 
 
+# ---------------------------------------------------------------------------
+# Set / delete tests
+# ---------------------------------------------------------------------------
+
+
 @pytest.mark.asyncio
-async def test_set_overwrites(store):
+async def test_set_overwrites(store, make_buffer):
     await store.set("k", make_buffer(b"first"))
     buf = await store.get("k", default_buffer_prototype())
     assert buf.to_bytes() == b"first"
@@ -190,7 +154,7 @@ async def test_set_overwrites(store):
 
 
 @pytest.mark.asyncio
-async def test_delete_erases_key(store):
+async def test_delete_erases_key(store, make_buffer):
     await store.set("k", make_buffer(b"data"))
     assert await store.exists("k")
     await store.delete("k")
@@ -204,7 +168,7 @@ async def test_delete_missing_key_is_noop(store):
 
 
 @pytest.mark.asyncio
-async def test_delete_dir_erases_prefix(store):
+async def test_delete_dir_erases_prefix(store, make_buffer):
     await store.set("a/x", make_buffer(b"1"))
     await store.set("a/y", make_buffer(b"2"))
     await store.set("b/z", make_buffer(b"3"))
@@ -215,21 +179,26 @@ async def test_delete_dir_erases_prefix(store):
 
 
 @pytest.mark.asyncio
-async def test_delete_dir_raises_when_key_is_leaf(store):
+async def test_delete_dir_raises_when_key_is_leaf(store, make_buffer):
     await store.set("a", make_buffer(b"leaf"))
     with pytest.raises(ValueError):
         await store.delete_dir("a")
 
 
 @pytest.mark.asyncio
-async def test_delete_dir(store):
+async def test_delete_dir(store, make_buffer):
     await store.set("a/b", make_buffer(b"1"))
     await store.delete_dir("a/")
     assert not await store.exists("a/b")
 
 
+# ---------------------------------------------------------------------------
+# Listing tests
+# ---------------------------------------------------------------------------
+
+
 @pytest.mark.asyncio
-async def test_list_returns_all_keys(store):
+async def test_list_returns_all_keys(store, make_buffer, collect):
     await store.set("a", make_buffer(b"1"))
     await store.set("b/c", make_buffer(b"2"))
     await store.set("b/d", make_buffer(b"3"))
@@ -238,12 +207,12 @@ async def test_list_returns_all_keys(store):
 
 
 @pytest.mark.asyncio
-async def test_list_empty(store):
+async def test_list_empty(store, collect):
     assert await collect(store.list()) == []
 
 
 @pytest.mark.asyncio
-async def test_list_prefix(store):
+async def test_list_prefix(store, make_buffer, collect):
     await store.set("a/1", make_buffer(b"1"))
     await store.set("a/2", make_buffer(b"2"))
     await store.set("ab/3", make_buffer(b"3"))
@@ -253,7 +222,7 @@ async def test_list_prefix(store):
 
 
 @pytest.mark.asyncio
-async def test_list_prefix_root(store):
+async def test_list_prefix_root(store, make_buffer, collect):
     await store.set("a/1", make_buffer(b"1"))
     await store.set("b/2", make_buffer(b"2"))
     keys = set(await collect(store.list_prefix("")))
@@ -261,13 +230,13 @@ async def test_list_prefix_root(store):
 
 
 @pytest.mark.asyncio
-async def test_list_prefix_no_match(store):
+async def test_list_prefix_no_match(store, make_buffer, collect):
     await store.set("a/1", make_buffer(b"1"))
     assert await collect(store.list_prefix("zzz/")) == []
 
 
 @pytest.mark.asyncio
-async def test_list_dir_root(store):
+async def test_list_dir_root(store, make_buffer, collect):
     await store.set("a/1", make_buffer(b"1"))
     await store.set("b/2", make_buffer(b"2"))
     await store.set("c/d/3", make_buffer(b"3"))
@@ -278,7 +247,7 @@ async def test_list_dir_root(store):
 
 
 @pytest.mark.asyncio
-async def test_list_dir_nested(store):
+async def test_list_dir_nested(store, make_buffer, collect):
     await store.set("a/x", make_buffer(b"1"))
     await store.set("a/y", make_buffer(b"2"))
     await store.set("a/sub/z", make_buffer(b"3"))
@@ -287,33 +256,43 @@ async def test_list_dir_nested(store):
 
 
 @pytest.mark.asyncio
-async def test_list_dir_no_match(store):
+async def test_list_dir_no_match(store, make_buffer, collect):
     await store.set("a/1", make_buffer(b"1"))
     assert await collect(store.list_dir("zzz/")) == []
 
 
 @pytest.mark.asyncio
-async def test_list_dir_empty_prefix_yields_nothing(store):
+async def test_list_dir_empty_prefix_yields_nothing(store, collect):
     assert await collect(store.list_dir("nonexistent/")) == []
 
 
+# ---------------------------------------------------------------------------
+# set_if_not_exists
+# ---------------------------------------------------------------------------
+
+
 @pytest.mark.asyncio
-async def test_set_if_not_exists(store):
+async def test_set_if_not_exists(store, make_buffer):
     await store.set_if_not_exists("k", make_buffer(b"first"))
     await store.set_if_not_exists("k", make_buffer(b"second"))
     buf = await store.get("k", default_buffer_prototype())
     assert buf.to_bytes() == b"first"
 
 
+# ---------------------------------------------------------------------------
+# exists / is_empty / clear
+# ---------------------------------------------------------------------------
+
+
 @pytest.mark.asyncio
-async def test_exists(store):
+async def test_exists(store, make_buffer):
     assert not await store.exists("k")
     await store.set("k", make_buffer(b"data"))
     assert await store.exists("k")
 
 
 @pytest.mark.asyncio
-async def test_is_empty(store):
+async def test_is_empty(store, make_buffer):
     assert await store.is_empty("")
     assert await store.is_empty("a/")
 
@@ -324,7 +303,7 @@ async def test_is_empty(store):
 
 
 @pytest.mark.asyncio
-async def test_clear(store):
+async def test_clear(store, make_buffer, collect):
     await store.set("a", make_buffer(b"1"))
     await store.set("b/c", make_buffer(b"2"))
     assert len(await collect(store.list())) == 2
@@ -332,8 +311,13 @@ async def test_clear(store):
     assert await collect(store.list()) == []
 
 
+# ---------------------------------------------------------------------------
+# getsize
+# ---------------------------------------------------------------------------
+
+
 @pytest.mark.asyncio
-async def test_getsize(store):
+async def test_getsize(store, make_buffer):
     await store.set("k", make_buffer(b"12345"))
     assert await store.getsize("k") == 5
 
@@ -345,7 +329,7 @@ async def test_getsize(store):
 
 
 @pytest.mark.asyncio
-async def test_getsize_prefix(store):
+async def test_getsize_prefix(store, make_buffer):
     await store.set("a/1", make_buffer(b"abc"))
     await store.set("a/2", make_buffer(b"de"))
     await store.set("a/3", make_buffer(b""))
@@ -356,7 +340,7 @@ async def test_getsize_prefix(store):
 
 
 @pytest.mark.asyncio
-async def test_getsize_prefix_empty(store):
+async def test_getsize_prefix_empty(store, make_buffer, collect):
     """getsize_prefix with empty prefix returns total size of all values."""
     await store.set("a", make_buffer(b"abc"))
     await store.set("b/c", make_buffer(b"de"))
@@ -368,8 +352,13 @@ async def test_getsize_prefix_empty(store):
     assert await store.getsize_prefix("") == 0
 
 
+# ---------------------------------------------------------------------------
+# delete_dir with empty prefix
+# ---------------------------------------------------------------------------
+
+
 @pytest.mark.asyncio
-async def test_delete_dir_empty_prefix(store):
+async def test_delete_dir_empty_prefix(store, make_buffer, collect):
     """delete_dir with empty prefix deletes all keys."""
     await store.set("a/b", make_buffer(b"1"))
     await store.set("c/d", make_buffer(b"2"))
@@ -379,642 +368,8 @@ async def test_delete_dir_empty_prefix(store):
 
 
 @pytest.mark.asyncio
-async def test_delete_dir_empty_prefix_raises_when_root_key(store):
+async def test_delete_dir_empty_prefix_raises_when_root_key(store, make_buffer):
     """delete_dir with empty prefix raises when the root key '' exists."""
     await store.set("", make_buffer(b"root"))
     with pytest.raises(ValueError, match="Cannot delete directory"):
         await store.delete_dir("")
-
-
-def test_eq_same_path(tmp_path):
-    db = tmp_path / "eq.db"
-    s1 = SQLiteStore(db)
-    s2 = SQLiteStore(str(db))
-    s3 = SQLiteStore(tmp_path / "other.db")
-    try:
-        assert s1 == s2
-        assert s1 != s3
-        assert s1 != "not a store"
-    finally:
-        s1.close()
-        s2.close()
-        s3.close()
-
-
-@pytest.mark.asyncio
-async def test_with_read_only(tmpfile_store):
-    await tmpfile_store.set("a", make_buffer(b"data"))
-
-    ro = tmpfile_store.with_read_only(read_only=True)
-    assert ro.read_only is True
-
-    assert await get_as_bytes(ro, "a") == b"data"
-
-    with pytest.raises(ValueError):
-        await ro.set("b", make_buffer(b"data"))
-    ro.close()
-
-
-def test_eq_in_memory():
-    """In-memory databases are unique, so __eq__ always returns False."""
-    s1 = SQLiteStore(":memory:")
-    s2 = SQLiteStore(":memory:")
-    try:
-        assert s1 != s2
-        assert s1 != "not a store"
-    finally:
-        s1.close()
-        s2.close()
-
-
-def test_memory_kept_as_is():
-    """:memory: is kept as-is, not converted to a URI."""
-    s = SQLiteStore(":memory:")
-    try:
-        assert s.database == ":memory:"
-    finally:
-        s.close()
-
-
-def test_non_read_only_keeps_string():
-    """Non-read-only stores keep the user's database string unmodified."""
-    s = SQLiteStore("foo.db")
-    try:
-        assert s.database == "foo.db"
-    finally:
-        s.close()
-
-
-def test_non_read_only_keeps_path_string():
-    """Non-read-only stores convert Path to str but keep the path unmodified."""
-    s = SQLiteStore(Path("foo.db"))
-    try:
-        assert s.database == "foo.db"
-    finally:
-        s.close()
-
-
-def test_read_only_converts_to_uri(tmp_path):
-    """Read-only stores convert the database to a URI with mode=ro."""
-    db = tmp_path / "test.db"
-    s = SQLiteStore(db, read_only=True)
-    try:
-        assert s.database.startswith("file:")
-        assert "mode=ro" in s.database
-    finally:
-        s.close()
-
-
-def test_with_read_only_in_memory_raises():
-    """with_read_only raises for in-memory databases."""
-    s = SQLiteStore(":memory:")
-    try:
-        with pytest.raises(ValueError, match="read-only view"):
-            s.with_read_only(read_only=True)
-    finally:
-        s.close()
-
-
-@pytest.mark.asyncio
-async def test_in_memory_isolates_data():
-    """Two in-memory stores do not share data."""
-    s1 = SQLiteStore(":memory:")
-    s2 = SQLiteStore(":memory:")
-    try:
-        await s1.set("key", make_buffer(b"data1"))
-        assert await s1.get("key", default_buffer_prototype()) is not None
-        assert await s2.get("key", default_buffer_prototype()) is None
-    finally:
-        s1.close()
-        s2.close()
-
-
-@pytest.mark.asyncio
-async def test_read_only_raises(tmpfile_store):
-    await tmpfile_store.set("a", make_buffer(b"data"))
-    tmpfile_store.close()
-    store = SQLiteStore(tmpfile_store.database, read_only=True)
-
-    with pytest.raises(ValueError):
-        await store.delete("a")
-    with pytest.raises(ValueError):
-        await store.set("b", make_buffer(b"data"))
-    with pytest.raises(ValueError):
-        await store.set_if_not_exists("b", make_buffer(b"data"))
-    with pytest.raises(ValueError):
-        await store.delete_dir("a/")
-    with pytest.raises(ValueError):
-        await store.clear()
-
-
-def test_validate_key_valid():
-    for key in ["", "a", "a/b", "a/b/c.json", "0", "with-dash_and.dot"]:
-        _validate_key(key)
-
-
-def test_validate_key_rejects_leading_slash():
-    invalid_keys = ["/a", "a/", "a//b", "a/b/"]
-    valid_keys = ["", "a", "a/b", "a/b/c", "foo/bar/baz/qux"]
-
-    for k in invalid_keys:
-        with pytest.raises(ValueError):
-            _validate_key(k)
-
-    for k in valid_keys:
-        # Should not raise
-        _validate_key(k)
-
-
-# ---------------------------------------------------------------------------
-# Schema creation tests
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_schema_tables_exist(tmpfile_store):
-    """Both required tables are created on first use."""
-    await tmpfile_store.set("key", make_buffer(b"data"))
-    con = sqlite3.connect(tmpfile_store.database, uri=True)
-    cur = con.execute("SELECT name FROM sqlite_master WHERE type='table'")
-    tables = {row[0] for row in cur.fetchall()}
-    con.close()
-    assert "zarr" in tables
-    assert "sqlitestore_metadata" in tables
-
-
-@pytest.mark.asyncio
-async def test_schema_not_null_constraints(tmpfile_store):
-    """Both k and v columns in both tables have NOT NULL."""
-    await tmpfile_store.set("key", make_buffer(b"data"))
-    con = sqlite3.connect(tmpfile_store.database, uri=True)
-    for table in ("zarr", "sqlitestore_metadata"):
-        cur = con.execute(f"PRAGMA table_info({table})")
-        for row in cur.fetchall():
-            assert row[3] == 1, (
-                f"Column '{row[1]}' in table '{table}' must have NOT NULL"
-            )
-    con.close()
-
-
-@pytest.mark.asyncio
-async def test_schema_application_id(tmpfile_store):
-    """application_id is set to the spec value."""
-    await tmpfile_store.set("key", make_buffer(b"data"))
-    con = sqlite3.connect(tmpfile_store.database, uri=True)
-    cur = con.execute("PRAGMA application_id")
-    assert cur.fetchone()[0] == _SQLITESTORE_APPLICATION_ID
-    con.close()
-
-
-@pytest.mark.asyncio
-async def test_metadata_required_records(tmpfile_store):
-    """All required metadata records exist with correct values."""
-    await tmpfile_store.set("key", make_buffer(b"data"))
-    con = sqlite3.connect(tmpfile_store.database, uri=True)
-    cur = con.execute("SELECT k, v FROM sqlitestore_metadata")
-    metadata = dict(cur.fetchall())
-    con.close()
-    assert metadata["sqlitestore_version"] == _SQLITESTORE_SPEC_VERSION
-    assert metadata["compatible_flags"] == ""
-    assert metadata["incompatible_flags"] == ""
-    assert "created_by" in metadata
-    assert "created_time" in metadata
-
-
-@pytest.mark.asyncio
-async def test_metadata_created_by(tmpfile_store):
-    """created_by contains the package name."""
-    await tmpfile_store.set("key", make_buffer(b"data"))
-    con = sqlite3.connect(tmpfile_store.database, uri=True)
-    cur = con.execute("SELECT v FROM sqlitestore_metadata WHERE k = 'created_by'")
-    created_by = cur.fetchone()[0]
-    con.close()
-    assert created_by.startswith("zarr-sqlite-python")
-
-
-@pytest.mark.asyncio
-async def test_metadata_created_time(tmpfile_store):
-    """created_time is a valid ISO 8601 timestamp within the last 5 minutes."""
-    await tmpfile_store.set("key", make_buffer(b"data"))
-    con = sqlite3.connect(tmpfile_store.database, uri=True)
-    cur = con.execute("SELECT v FROM sqlitestore_metadata WHERE k = 'created_time'")
-    created_time = datetime.datetime.fromisoformat(cur.fetchone()[0])
-    con.close()
-    now = datetime.datetime.now(datetime.timezone.utc)
-    assert now - datetime.timedelta(minutes=5) <= created_time <= now
-
-
-# ---------------------------------------------------------------------------
-# Schema validation tests
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_validate_missing_zarr_table(tmpfile_store):
-    """Opening a file without the zarr table should fail."""
-    await tmpfile_store.set("key", make_buffer(b"data"))
-    tmpfile_store.close()
-
-    con = sqlite3.connect(tmpfile_store.database, uri=True)
-    con.execute("DROP TABLE zarr")
-    con.commit()
-    con.close()
-
-    store = SQLiteStore(tmpfile_store.database, read_only=True)
-    with pytest.raises(ValueError, match="missing required table 'zarr'"):
-        await store.exists("key")
-
-
-@pytest.mark.asyncio
-async def test_validate_missing_metadata_table(tmpfile_store):
-    """Opening a file without sqlitestore_metadata should fail."""
-    await tmpfile_store.set("key", make_buffer(b"data"))
-    tmpfile_store.close()
-
-    con = sqlite3.connect(tmpfile_store.database, uri=True)
-    con.execute("DROP TABLE sqlitestore_metadata")
-    con.commit()
-    con.close()
-
-    store = SQLiteStore(tmpfile_store.database, read_only=True)
-    with pytest.raises(
-        ValueError, match="missing required table 'sqlitestore_metadata'"
-    ):
-        await store.exists("key")
-
-
-@pytest.mark.asyncio
-async def test_validate_missing_metadata_record(tmpfile_store):
-    """Opening a file with a missing required metadata record should fail."""
-    await tmpfile_store.set("key", make_buffer(b"data"))
-    tmpfile_store.close()
-
-    con = sqlite3.connect(tmpfile_store.database, uri=True)
-    con.execute("DELETE FROM sqlitestore_metadata WHERE k = 'sqlitestore_version'")
-    con.commit()
-    con.close()
-
-    store = SQLiteStore(tmpfile_store.database, read_only=True)
-    with pytest.raises(
-        ValueError, match="missing required metadata entry 'sqlitestore_version'"
-    ):
-        await store.exists("key")
-
-
-@pytest.mark.asyncio
-async def test_validate_invalid_version(tmpfile_store):
-    """Opening a file with an invalid version string should fail."""
-    await tmpfile_store.set("key", make_buffer(b"data"))
-    tmpfile_store.close()
-
-    con = sqlite3.connect(tmpfile_store.database, uri=True)
-    con.execute(
-        "UPDATE sqlitestore_metadata SET v = 'invalid' WHERE k = 'sqlitestore_version'"
-    )
-    con.commit()
-    con.close()
-
-    store = SQLiteStore(tmpfile_store.database, read_only=True)
-    with pytest.raises(ValueError, match="Invalid sqlitestore_version"):
-        await store.exists("key")
-
-
-@pytest.mark.asyncio
-async def test_validate_unsupported_major_version(tmpfile_store):
-    """Opening a file with an unsupported major version should fail."""
-    await tmpfile_store.set("key", make_buffer(b"data"))
-    tmpfile_store.close()
-
-    con = sqlite3.connect(tmpfile_store.database, uri=True)
-    con.execute(
-        "UPDATE sqlitestore_metadata SET v = '2.0' WHERE k = 'sqlitestore_version'"
-    )
-    con.commit()
-    con.close()
-
-    store = SQLiteStore(tmpfile_store.database, read_only=True)
-    with pytest.raises(ValueError, match="Unsupported sqlitestore_version"):
-        await store.exists("key")
-
-
-@pytest.mark.asyncio
-async def test_validate_unknown_incompatible_flag(tmpfile_store):
-    """Opening a file with an unknown incompatible flag should fail."""
-    await tmpfile_store.set("key", make_buffer(b"data"))
-    tmpfile_store.close()
-
-    con = sqlite3.connect(tmpfile_store.database, uri=True)
-    con.execute(
-        "UPDATE sqlitestore_metadata SET v = 'unknown_flag' "
-        "WHERE k = 'incompatible_flags'"
-    )
-    con.commit()
-    con.close()
-
-    store = SQLiteStore(tmpfile_store.database, read_only=True)
-    with pytest.raises(
-        ValueError, match="SQLiteStore flag 'unknown_flag' is not supported"
-    ):
-        await store.exists("key")
-
-
-@pytest.mark.asyncio
-async def test_read_only_valid_file(tmpfile_store):
-    """A valid file can be opened in read-only mode."""
-    await tmpfile_store.set("key", make_buffer(b"data"))
-    tmpfile_store.close()
-
-    store = SQLiteStore(tmpfile_store.database, read_only=True)
-    assert await get_as_bytes(store, "key") == b"data"
-    store.close()
-
-
-@pytest.mark.asyncio
-async def test_validate_wrong_application_id_writable(tmpfile_store):
-    """Opening a writable store with a wrong application_id should raise."""
-    await tmpfile_store.set("key", make_buffer(b"data"))
-    tmpfile_store.close()
-
-    con = sqlite3.connect(tmpfile_store.database, uri=True)
-    con.execute("PRAGMA application_id = 0")
-    con.commit()
-    con.close()
-
-    store = SQLiteStore(tmpfile_store.database, read_only=False)
-    with pytest.raises(ValueError, match="Unexpected application_id"):
-        await store.exists("key")
-    store.close()
-
-
-@pytest.mark.asyncio
-async def test_validate_wrong_application_id_read_only(tmpfile_store):
-    """Opening a read-only store with a wrong application_id should warn."""
-    await tmpfile_store.set("key", make_buffer(b"data"))
-    tmpfile_store.close()
-
-    con = sqlite3.connect(tmpfile_store.database, uri=True)
-    con.execute("PRAGMA application_id = 0")
-    con.commit()
-    con.close()
-
-    store = SQLiteStore(tmpfile_store.database, read_only=True)
-    with pytest.warns(UserWarning, match="Unexpected application_id"):
-        assert await get_as_bytes(store, "key") == b"data"
-    store.close()
-
-
-@pytest.mark.asyncio
-async def test_open_existing_valid_file_writable(tmpfile_store):
-    """Opening an existing valid file in writable mode should not recreate schema.
-
-    The _db_is_empty() check should skip schema creation when the database
-    already contains tables, and _validate_schema() should succeed.
-    """
-    await tmpfile_store.set("a", make_buffer(b"first"))
-    await tmpfile_store.set("b", make_buffer(b"second"))
-    tmpfile_store.close()
-
-    # Open a *new* store object pointing to the same file in writable mode.
-    store = SQLiteStore(tmpfile_store.database, read_only=False)
-    assert await get_as_bytes(store, "a") == b"first"
-    assert await get_as_bytes(store, "b") == b"second"
-
-    # New writes must work after opening an existing file.
-    await store.set("c", make_buffer(b"third"))
-    assert await get_as_bytes(store, "c") == b"third"
-
-    keys = set(await collect(store.list()))
-    assert keys == {"a", "b", "c"}
-
-    store.close()
-
-
-@pytest.mark.asyncio
-async def test_reuse_after_close(tmpfile_store):
-    """A file-based SQLiteStore can be re-used after close().
-
-    The data written before close() must persist, and new operations must
-    work after the store is implicitly re-opened.
-    """
-    # Write data before closing
-    await tmpfile_store.set("a", make_buffer(b"first"))
-    await tmpfile_store.set("b", make_buffer(b"second"))
-
-    # Close the store
-    tmpfile_store.close()
-
-    # Re-use the store: an operation triggers _ensure_open -> _open,
-    # which creates a new connection pool and re-creates/validates the schema.
-    assert await get_as_bytes(tmpfile_store, "a") == b"first"
-    assert await get_as_bytes(tmpfile_store, "b") == b"second"
-
-    # New writes must also work after re-open
-    await tmpfile_store.set("c", make_buffer(b"third"))
-    assert await get_as_bytes(tmpfile_store, "c") == b"third"
-
-    # Listing must reflect all keys
-    keys = set(await collect(tmpfile_store.list()))
-    assert keys == {"a", "b", "c"}
-
-    tmpfile_store.close()
-
-
-# ---------------------------------------------------------------------------
-# Case sensitivity tests
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_case_sensitive_keys_get_set(store):
-    """Keys are case-sensitive: 'Key' and 'key' are different keys."""
-    await store.set("Key", make_buffer(b"uppercase"))
-    await store.set("key", make_buffer(b"lowercase"))
-    assert await get_as_bytes(store, "Key") == b"uppercase"
-    assert await get_as_bytes(store, "key") == b"lowercase"
-
-
-@pytest.mark.asyncio
-async def test_case_sensitive_keys_list(store):
-    """list returns keys with different cases as distinct entries."""
-    await store.set("Apple", make_buffer(b"1"))
-    await store.set("apple", make_buffer(b"2"))
-    await store.set("APPLE", make_buffer(b"3"))
-    keys = set(await collect(store.list()))
-    assert keys == {"Apple", "apple", "APPLE"}
-
-
-@pytest.mark.asyncio
-async def test_case_sensitive_list_prefix(store):
-    """list_prefix is case-sensitive."""
-    await store.set("Data/a", make_buffer(b"1"))
-    await store.set("data/b", make_buffer(b"2"))
-    await store.set("DATA/c", make_buffer(b"3"))
-    keys = set(await collect(store.list_prefix("Data/")))
-    assert keys == {"Data/a"}
-
-
-# ---------------------------------------------------------------------------
-# Non-alphanumeric characters in keys (non-glob-special chars)
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_non_alphanumeric_keys_get_set(store):
-    """Keys with non-alphanumeric characters can be stored and retrieved."""
-    special_keys = ["a%b", "a^b", "a¸b", "a_b", "a-b.c", "a+b", "a=b"]
-    for key in special_keys:
-        await store.set(key, make_buffer(b"data"))
-        assert await get_as_bytes(store, key) == b"data"
-
-
-@pytest.mark.asyncio
-async def test_non_alphanumeric_keys_list(store):
-    """list returns keys with non-alphanumeric characters."""
-    keys_to_set = ["a%b", "a^b", "a¸b", "a_b", "a-b.c"]
-    for key in keys_to_set:
-        await store.set(key, make_buffer(b"data"))
-    result = set(await collect(store.list()))
-    assert result == set(keys_to_set)
-
-
-@pytest.mark.asyncio
-async def test_list_prefix_with_special_chars(store):
-    """list_prefix works with prefixes containing non-glob special characters."""
-    await store.set("a%b/x", make_buffer(b"1"))
-    await store.set("a%b/y", make_buffer(b"2"))
-    await store.set("a^b/z", make_buffer(b"3"))
-    keys = set(await collect(store.list_prefix("a%b/")))
-    assert keys == {"a%b/x", "a%b/y"}
-
-
-@pytest.mark.asyncio
-async def test_list_dir_with_special_chars(store):
-    """list_dir works with prefixes containing non-glob special characters."""
-    await store.set("a%b/x", make_buffer(b"1"))
-    await store.set("a%b/y", make_buffer(b"2"))
-    await store.set("a%b/sub/z", make_buffer(b"3"))
-    entries = set(await collect(store.list_dir("a%b/")))
-    assert entries == {"x", "y", "sub/"}
-
-
-@pytest.mark.asyncio
-async def test_list_prefix_glob_star_in_prefix(store):
-    """list_prefix with '*' in prefix should not treat '*' as a glob wildcard."""
-    await store.set("a*x/y", make_buffer(b"1"))
-    await store.set("abx/y", make_buffer(b"2"))
-    keys = set(await collect(store.list_prefix("a*x")))
-    assert keys == {"a*x/y"}
-
-
-@pytest.mark.asyncio
-async def test_list_prefix_glob_question_in_prefix(store):
-    """list_prefix with '?' in prefix should not treat '?' as a glob wildcard."""
-    await store.set("a?b/y", make_buffer(b"1"))
-    await store.set("axb/y", make_buffer(b"2"))
-    keys = set(await collect(store.list_prefix("a?b")))
-    assert keys == {"a?b/y"}
-
-
-# ---------------------------------------------------------------------------
-# Unicode and emoji tests
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_unicode_keys_get_set(store):
-    """Keys with unicode characters can be stored and retrieved."""
-    unicode_keys = [
-        "café/data",
-        "日本語/key",
-        "español/ñ",
-        "русский/язык",
-        "中文/测试",
-        "العربية/لغة",
-    ]
-    for key in unicode_keys:
-        await store.set(key, make_buffer(b"unicode_data"))
-        assert await get_as_bytes(store, key) == b"unicode_data"
-
-
-@pytest.mark.asyncio
-async def test_unicode_keys_list(store):
-    """list returns keys with unicode characters."""
-    unicode_keys = [
-        "café/data",
-        "日本語/key",
-        "español/ñ",
-        "русский/язык",
-        "中文/测试",
-        "العربية/لغة",
-    ]
-    for key in unicode_keys:
-        await store.set(key, make_buffer(b"unicode_data"))
-    result = set(await collect(store.list()))
-    assert result == set(unicode_keys)
-
-
-@pytest.mark.asyncio
-async def test_unicode_list_prefix(store):
-    """list_prefix works with unicode prefixes."""
-    await store.set("café/data", make_buffer(b"1"))
-    await store.set("café/other", make_buffer(b"2"))
-    await store.set("日本語/key", make_buffer(b"3"))
-    keys = set(await collect(store.list_prefix("café/")))
-    assert keys == {"café/data", "café/other"}
-
-
-@pytest.mark.asyncio
-async def test_emoji_keys_get_set(store):
-    """Keys with emoji characters can be stored and retrieved."""
-    emoji_keys = [
-        "🎉/party",
-        "🎊/confetti",
-        "🚀/launch",
-        "🌟/star",
-        "🎉/data",
-    ]
-    for key in emoji_keys:
-        await store.set(key, make_buffer(b"emoji_data"))
-        assert await get_as_bytes(store, key) == b"emoji_data"
-
-
-@pytest.mark.asyncio
-async def test_emoji_keys_list(store):
-    """list returns keys with emoji characters."""
-    emoji_keys = [
-        "🎉/party",
-        "🎊/confetti",
-        "🚀/launch",
-        "🌟/star",
-        "🎉/data",
-    ]
-    for key in emoji_keys:
-        await store.set(key, make_buffer(b"emoji_data"))
-    result = set(await collect(store.list()))
-    assert result == set(emoji_keys)
-
-
-@pytest.mark.asyncio
-async def test_emoji_list_prefix(store):
-    """list_prefix works with emoji prefixes."""
-    await store.set("🎉/party", make_buffer(b"1"))
-    await store.set("🎉/data", make_buffer(b"2"))
-    await store.set("🎊/confetti", make_buffer(b"3"))
-    keys = set(await collect(store.list_prefix("🎉/")))
-    assert keys == {"🎉/party", "🎉/data"}
-
-
-@pytest.mark.asyncio
-async def test_mixed_unicode_emoji_keys(store):
-    """Keys with mixed unicode and emoji characters can be stored and listed."""
-    mixed_keys = [
-        "café/🎉",
-        "日本語/🚀",
-        "🎊/español",
-        "русский/🌟",
-    ]
-    for key in mixed_keys:
-        await store.set(key, make_buffer(b"mixed_data"))
-        assert await get_as_bytes(store, key) == b"mixed_data"
-    result = set(await collect(store.list()))
-    assert result == set(mixed_keys)
