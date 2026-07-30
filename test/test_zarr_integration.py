@@ -1,6 +1,7 @@
 """Test integration with zarr library"""
 
 import os
+import sqlite3
 import tempfile
 from pathlib import Path
 import pytest
@@ -180,3 +181,59 @@ def test_store_array_creates_file_and_persists():
 
         # Ensure store is closed so tmpdir can be safely deleted
         read_root.store.close()
+
+
+def test_store_close_cleans_up_wal_files(temp_db_file):
+    """Closing the store should checkpoint the WAL and remove sidecar files."""
+    store = SQLiteStore(temp_db_file)
+    z = zarr.create_array(
+        store=store, shape=(100, 100), chunks=(10, 10), dtype="f4"
+    )
+    data = random_array((100, 100), dtype=np.float32)
+    z[:, :] = data
+    read_back = z[:]
+    assert np.array_equal(read_back, data)
+
+    # WAL and SHM files should exist while the store is open and has data
+    assert os.path.exists(temp_db_file + "-wal")
+    assert os.path.exists(temp_db_file + "-shm")
+
+    # Close the store - this should checkpoint the WAL
+    store.close()
+
+    # No -wal or -shm files should remain after close
+    assert not os.path.exists(temp_db_file + "-wal")
+    assert not os.path.exists(temp_db_file + "-shm")
+
+    # Open a raw sqlite3 connection and verify WAL is clean
+    con = sqlite3.connect(temp_db_file)
+    result = con.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchone()
+    assert result == (0, 0, 0)
+    con.close()
+
+
+def test_concurrent_read_creates_multiple_connections(sqlite_store):
+    """Concurrent chunk reads create additional connections in the pool.
+
+    Writes are serialized through a single writer connection, so after
+    writing an array with many chunks the pool has exactly 1 connection.
+    Reading the array back triggers concurrent chunk reads (zarr uses
+    asyncio.gather with a concurrency of 10), which causes the pool to
+    create additional read connections.
+    """
+    # Create a 100x100 array with 10x10 chunks → 100 chunks
+    z = zarr.create_array(
+        store=sqlite_store, shape=(100, 100), chunks=(10, 10), dtype="f4"
+    )
+    data = random_array((100, 100), dtype=np.float32)
+    z[:, :] = data
+
+    # Writes are serialized through a single writer connection
+    assert sqlite_store._pool.num_connections == 1
+
+    # Reading all chunks triggers concurrent reads
+    read_back = z[:]
+    assert np.array_equal(read_back, data)
+
+    # Concurrent reads should have created additional connections
+    assert sqlite_store._pool.num_connections > 1
