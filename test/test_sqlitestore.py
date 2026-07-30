@@ -730,6 +730,66 @@ async def test_read_only_valid_file(tmpfile_store):
 
 
 @pytest.mark.asyncio
+async def test_validate_wrong_application_id_writable(tmpfile_store):
+    """Opening a writable store with a wrong application_id should raise."""
+    await tmpfile_store.set("key", make_buffer(b"data"))
+    tmpfile_store.close()
+
+    con = sqlite3.connect(tmpfile_store.database, uri=True)
+    con.execute("PRAGMA application_id = 0")
+    con.commit()
+    con.close()
+
+    store = SQLiteStore(tmpfile_store.database, read_only=False)
+    with pytest.raises(ValueError, match="Unexpected application_id"):
+        await store.exists("key")
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_validate_wrong_application_id_read_only(tmpfile_store):
+    """Opening a read-only store with a wrong application_id should warn."""
+    await tmpfile_store.set("key", make_buffer(b"data"))
+    tmpfile_store.close()
+
+    con = sqlite3.connect(tmpfile_store.database, uri=True)
+    con.execute("PRAGMA application_id = 0")
+    con.commit()
+    con.close()
+
+    store = SQLiteStore(tmpfile_store.database, read_only=True)
+    with pytest.warns(UserWarning, match="Unexpected application_id"):
+        assert await get_as_bytes(store, "key") == b"data"
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_open_existing_valid_file_writable(tmpfile_store):
+    """Opening an existing valid file in writable mode should not recreate schema.
+
+    The _db_is_empty() check should skip schema creation when the database
+    already contains tables, and _validate_schema() should succeed.
+    """
+    await tmpfile_store.set("a", make_buffer(b"first"))
+    await tmpfile_store.set("b", make_buffer(b"second"))
+    tmpfile_store.close()
+
+    # Open a *new* store object pointing to the same file in writable mode.
+    store = SQLiteStore(tmpfile_store.database, read_only=False)
+    assert await get_as_bytes(store, "a") == b"first"
+    assert await get_as_bytes(store, "b") == b"second"
+
+    # New writes must work after opening an existing file.
+    await store.set("c", make_buffer(b"third"))
+    assert await get_as_bytes(store, "c") == b"third"
+
+    keys = set(await collect(store.list()))
+    assert keys == {"a", "b", "c"}
+
+    store.close()
+
+
+@pytest.mark.asyncio
 async def test_reuse_after_close(tmpfile_store):
     """A file-based SQLiteStore can be re-used after close().
 

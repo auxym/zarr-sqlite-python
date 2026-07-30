@@ -1,6 +1,7 @@
 import asyncio
 
 import sqlite3
+import warnings
 
 from contextlib import asynccontextmanager
 
@@ -218,7 +219,7 @@ class AsyncConnectionPool:
     def __init__(
         self,
         database: str,
-        n_connections: int = 10,
+        max_connections: int = 10,
         read_only: bool = False,
         acquire_timeout: float = 5.0,
     ) -> None:
@@ -226,7 +227,7 @@ class AsyncConnectionPool:
 
         Args:
             database: The SQLite database specifier (path, URI, or ":memory:").
-            n_connections: Maximum number of read connections in the pool.
+            max_connections: Maximum number of read connections in the pool.
             read_only: If True, the pool will not create a writer connection.
             acquire_timeout: Timeout in seconds for acquiring a connection.
         """
@@ -235,7 +236,7 @@ class AsyncConnectionPool:
         self._database = database
         self._is_open = True
         self._raw_connections = []
-        self._max_connections = n_connections
+        self._max_connections = max_connections
         self._read_only = read_only
         self._creation_lock = asyncio.Lock()
         self._acquire_timeout = acquire_timeout
@@ -256,6 +257,11 @@ class AsyncConnectionPool:
     def read_only(self) -> bool:
         """Whether the pool is in read-only mode."""
         return self._read_only
+
+    @property
+    def num_connections(self):
+        """Total number of connections in the pool."""
+        return len(self._raw_connections)
 
     async def _create_connection(self) -> PooledConnection:
         conn = await asyncio.to_thread(
@@ -450,7 +456,10 @@ class AsyncConnectionPool:
         for conn in self._raw_connections:
             try:
                 conn.close()
-            except Exception:
-                pass
+            except Exception as e:
+                warnings.warn(
+                    f"Failed to close connection: {e}",
+                    stacklevel=2,
+                )
 
         self._raw_connections = []

@@ -3,6 +3,7 @@ from typing import override, Self
 from collections.abc import Iterable, AsyncIterator
 import datetime
 import sqlite3
+import warnings
 from pathlib import Path
 import urllib.parse
 import asyncio
@@ -146,10 +147,10 @@ class SQLiteStore(Store):
         return urllib.parse.urlunsplit(
             urllib.parse.SplitResult(
                 scheme=uri_parts.scheme,
-                netloc='',
+                netloc="",
                 path=uri_parts.path,
                 query=urllib.parse.urlencode(query, doseq=True),
-                fragment=''
+                fragment="",
             )
         )
 
@@ -173,10 +174,13 @@ class SQLiteStore(Store):
         if not self._pool.is_open:
             self._pool = AsyncConnectionPool(self.database, read_only=self._read_only)
 
-        if not self._read_only:
+        if not self._read_only and await self._db_is_empty():
+            # Create schema only on empty file to avoid clobbering an existing file.
             async with self._pool.acquire_write() as conn:
                 await self._create_schema(conn)
+
         await self._validate_schema()
+
         self._is_open = True
 
     @override
@@ -189,6 +193,11 @@ class SQLiteStore(Store):
         if self._journal_mode is not None:
             if self._journal_mode not in {"DELETE", "WAL"}:
                 raise ValueError(f"Invalid journal_mode: {self._journal_mode}")
+
+            # Changing journal mode to WAL might fail if we have more than
+            # 1 connection to the db.
+            assert self._pool.num_connections <= 1
+
             try:
                 conn.autocommit = True
                 await conn.execute("PRAGMA journal_mode=" + self._journal_mode)
@@ -226,6 +235,20 @@ class SQLiteStore(Store):
             ("created_time", now),
         )
 
+    async def _db_is_empty(self) -> bool:
+        row = await self._pool.fetchone(
+            """
+            SELECT EXISTS (
+                SELECT 1
+                FROM sqlite_schema
+                WHERE type IN ('table', 'view', 'index', 'trigger')
+                AND name NOT LIKE 'sqlite_%'
+            )
+            """
+        )
+        assert row is not None
+        return row[0] == 0
+
     async def _validate_schema(self) -> None:
         metadata_keys = (
             "sqlitestore_version",
@@ -240,10 +263,32 @@ class SQLiteStore(Store):
                     raise ValueError(
                         f"Invalid SQLiteStore file: missing required table '{required_table}'"
                     )
+
+            app_id_row = await conn.fetchone("PRAGMA application_id")
+            assert app_id_row is not None
+            app_id = app_id_row[0]
+
             metadata_rows = await conn.fetchall(
                 "SELECT k, v FROM sqlitestore_metadata WHERE k IN (?, ?, ?)",
                 metadata_keys,
             )
+
+        if app_id != _SQLITESTORE_APPLICATION_ID:
+            if self.read_only:
+                warnings.warn(
+                    f"Unexpected application_id for SQLiteStore: {app_id:#x} "
+                    f"(expected {_SQLITESTORE_APPLICATION_ID:#x}). "
+                    "This may not be a valid Zarr SQLiteStore file. Attempting to open it anyway.",
+                    stacklevel=2,
+                )
+            else:
+                # For writable files, we don't want to make modifications to a non-sqlitestore
+                # file that may have been opened by error, so refuse to open it.
+                raise ValueError(
+                    f"Invalid SQLiteStore file: "
+                    f"Unexpected application_id for SQLiteStore {app_id:#x} "
+                    f"(expected {_SQLITESTORE_APPLICATION_ID:#x})."
+                )
 
         metadata = dict(metadata_rows) if metadata_rows else {}
         for k in metadata_keys:
