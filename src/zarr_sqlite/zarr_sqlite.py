@@ -80,6 +80,7 @@ class SQLiteStore(Store):
     _pool: AsyncConnectionPool
     _journal_mode: str | None
     _page_size: int
+    _max_connections: int
 
     @property
     @override
@@ -103,12 +104,18 @@ class SQLiteStore(Store):
         read_only: bool = False,
         journal_mode: str | None = "WAL",
         page_size: int = 4096,
+        max_connections=10,
     ) -> None:
         super().__init__(read_only=read_only)
         self._database = str(database)
         self._journal_mode = journal_mode
         self._page_size = page_size
-        self._pool = AsyncConnectionPool(self.database, read_only=read_only)
+        self._max_connections = max_connections
+
+        self._pool = AsyncConnectionPool(
+            self.database, read_only=read_only, max_connections=self._max_connections
+        )
+
         self._open_lock = asyncio.Lock()
 
         if self.is_in_memory() and read_only:
@@ -177,7 +184,7 @@ class SQLiteStore(Store):
         # Connection pool cannot be reused, if it was closed, we need to create
         # a new one.
         if not self._pool.is_open:
-            self._pool = AsyncConnectionPool(self.database, read_only=self._read_only)
+            self._pool = AsyncConnectionPool(self.database, read_only=self._read_only, max_connections=self._max_connections)
 
         if not self._read_only and await self._db_is_empty():
             # Create schema only on empty file to avoid clobbering an existing file.
