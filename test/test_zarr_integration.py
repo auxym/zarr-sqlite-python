@@ -2,12 +2,11 @@
 
 import os
 import sqlite3
-import tempfile
-from pathlib import Path
 import pytest
 import numpy as np
 import zarr
 from zarr_sqlite import SQLiteStore
+
 
 
 def random_array(shape, dtype=np.float64):

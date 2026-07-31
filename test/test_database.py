@@ -7,6 +7,8 @@ from zarr.core.buffer import default_buffer_prototype
 
 from zarr_sqlite import SQLiteStore
 
+from test.helpers import make_buffer, get_as_bytes, collect
+
 
 # ---------------------------------------------------------------------------
 # Equality tests
@@ -99,7 +101,7 @@ def test_with_read_only_in_memory_raises():
 
 
 @pytest.mark.asyncio
-async def test_in_memory_isolates_data(make_buffer):
+async def test_in_memory_isolates_data():
     """Two in-memory stores do not share data."""
     s1 = SQLiteStore(":memory:")
     s2 = SQLiteStore(":memory:")
@@ -118,7 +120,7 @@ async def test_in_memory_isolates_data(make_buffer):
 
 
 @pytest.mark.asyncio
-async def test_with_read_only(tempstore, make_buffer, get_as_bytes):
+async def test_with_read_only(tempstore):
     await tempstore.set("a", make_buffer(b"data"))
 
     ro = tempstore.with_read_only(read_only=True)
@@ -132,7 +134,7 @@ async def test_with_read_only(tempstore, make_buffer, get_as_bytes):
 
 
 @pytest.mark.asyncio
-async def test_read_only_raises(tempstore, make_buffer):
+async def test_read_only_raises(tempstore):
     await tempstore.set("a", make_buffer(b"data"))
     tempstore.close()
     store = SQLiteStore(tempstore.database, read_only=True)
@@ -156,7 +158,7 @@ async def test_read_only_raises(tempstore, make_buffer):
 
 @pytest.mark.asyncio
 async def test_open_existing_valid_file_writable(
-    tempstore, make_buffer, get_as_bytes, collect
+    tempstore
 ):
     """Opening an existing valid file in writable mode should not recreate schema.
 
@@ -183,7 +185,7 @@ async def test_open_existing_valid_file_writable(
 
 
 @pytest.mark.asyncio
-async def test_reuse_after_close(tempstore, make_buffer, get_as_bytes, collect):
+async def test_reuse_after_close(tempstore):
     """A file-based SQLiteStore can be re-used after close().
 
     The data written before close() must persist, and new operations must

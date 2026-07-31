@@ -12,6 +12,8 @@ from zarr_sqlite.zarr_sqlite import (
     _SQLITESTORE_APPLICATION_ID,
 )
 
+from test.helpers import make_buffer, get_as_bytes
+
 
 # ---------------------------------------------------------------------------
 # Schema creation tests
@@ -19,7 +21,7 @@ from zarr_sqlite.zarr_sqlite import (
 
 
 @pytest.mark.asyncio
-async def test_schema_tables_exist(tempstore, make_buffer):
+async def test_schema_tables_exist(tempstore):
     """Both required tables are created on first use."""
     await tempstore.set("key", make_buffer(b"data"))
     con = sqlite3.connect(tempstore.database)
@@ -31,7 +33,7 @@ async def test_schema_tables_exist(tempstore, make_buffer):
 
 
 @pytest.mark.asyncio
-async def test_schema_not_null_constraints(tempstore, make_buffer):
+async def test_schema_not_null_constraints(tempstore):
     """Both k and v columns in both tables have NOT NULL."""
     await tempstore.set("key", make_buffer(b"data"))
     con = sqlite3.connect(tempstore.database)
@@ -45,7 +47,7 @@ async def test_schema_not_null_constraints(tempstore, make_buffer):
 
 
 @pytest.mark.asyncio
-async def test_schema_application_id(tempstore, make_buffer):
+async def test_schema_application_id(tempstore):
     """application_id is set to the spec value."""
     await tempstore.set("key", make_buffer(b"data"))
     con = sqlite3.connect(tempstore.database)
@@ -55,7 +57,7 @@ async def test_schema_application_id(tempstore, make_buffer):
 
 
 @pytest.mark.asyncio
-async def test_metadata_required_records(tempstore, make_buffer):
+async def test_metadata_required_records(tempstore):
     """All required metadata records exist with correct values."""
     await tempstore.set("key", make_buffer(b"data"))
     con = sqlite3.connect(tempstore.database)
@@ -70,7 +72,7 @@ async def test_metadata_required_records(tempstore, make_buffer):
 
 
 @pytest.mark.asyncio
-async def test_metadata_created_by(tempstore, make_buffer):
+async def test_metadata_created_by(tempstore):
     """created_by contains the package name."""
     await tempstore.set("key", make_buffer(b"data"))
     con = sqlite3.connect(tempstore.database)
@@ -81,7 +83,7 @@ async def test_metadata_created_by(tempstore, make_buffer):
 
 
 @pytest.mark.asyncio
-async def test_metadata_created_time(tempstore, make_buffer):
+async def test_metadata_created_time(tempstore):
     """created_time is a valid ISO 8601 timestamp within the last 5 minutes."""
     TIMESTAMP_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$")
     await tempstore.set("key", make_buffer(b"data"))
@@ -103,7 +105,7 @@ async def test_metadata_created_time(tempstore, make_buffer):
 
 
 @pytest.mark.asyncio
-async def test_validate_missing_zarr_table(tempstore, make_buffer):
+async def test_validate_missing_zarr_table(tempstore):
     """Opening a file without the zarr table should fail."""
     await tempstore.set("key", make_buffer(b"data"))
     tempstore.close()
@@ -119,7 +121,7 @@ async def test_validate_missing_zarr_table(tempstore, make_buffer):
 
 
 @pytest.mark.asyncio
-async def test_validate_missing_metadata_table(tempstore, make_buffer):
+async def test_validate_missing_metadata_table(tempstore):
     """Opening a file without sqlitestore_metadata should fail."""
     await tempstore.set("key", make_buffer(b"data"))
     tempstore.close()
@@ -137,7 +139,7 @@ async def test_validate_missing_metadata_table(tempstore, make_buffer):
 
 
 @pytest.mark.asyncio
-async def test_validate_missing_metadata_record(tempstore, make_buffer):
+async def test_validate_missing_metadata_record(tempstore):
     """Opening a file with a missing required metadata record should fail."""
     await tempstore.set("key", make_buffer(b"data"))
     tempstore.close()
@@ -155,7 +157,7 @@ async def test_validate_missing_metadata_record(tempstore, make_buffer):
 
 
 @pytest.mark.asyncio
-async def test_validate_invalid_version(tempstore, make_buffer):
+async def test_validate_invalid_version(tempstore):
     """Opening a file with an invalid version string should fail."""
     await tempstore.set("key", make_buffer(b"data"))
     tempstore.close()
@@ -173,7 +175,7 @@ async def test_validate_invalid_version(tempstore, make_buffer):
 
 
 @pytest.mark.asyncio
-async def test_validate_unsupported_major_version(tempstore, make_buffer):
+async def test_validate_unsupported_major_version(tempstore):
     """Opening a file with an unsupported major version should fail."""
     await tempstore.set("key", make_buffer(b"data"))
     tempstore.close()
@@ -191,7 +193,7 @@ async def test_validate_unsupported_major_version(tempstore, make_buffer):
 
 
 @pytest.mark.asyncio
-async def test_validate_unknown_incompatible_flag(tempstore, make_buffer):
+async def test_validate_unknown_incompatible_flag(tempstore):
     """Opening a file with an unknown incompatible flag should fail."""
     await tempstore.set("key", make_buffer(b"data"))
     tempstore.close()
@@ -212,7 +214,7 @@ async def test_validate_unknown_incompatible_flag(tempstore, make_buffer):
 
 
 @pytest.mark.asyncio
-async def test_read_only_valid_file(tempstore, make_buffer, get_as_bytes):
+async def test_read_only_valid_file(tempstore):
     """A valid file can be opened in read-only mode."""
     await tempstore.set("key", make_buffer(b"data"))
     tempstore.close()
@@ -223,7 +225,7 @@ async def test_read_only_valid_file(tempstore, make_buffer, get_as_bytes):
 
 
 @pytest.mark.asyncio
-async def test_validate_wrong_application_id_writable(tempstore, make_buffer):
+async def test_validate_wrong_application_id_writable(tempstore):
     """Opening a writable store with a wrong application_id should raise."""
     await tempstore.set("key", make_buffer(b"data"))
     tempstore.close()
@@ -241,7 +243,7 @@ async def test_validate_wrong_application_id_writable(tempstore, make_buffer):
 
 @pytest.mark.asyncio
 async def test_validate_wrong_application_id_read_only(
-    tempstore, make_buffer, get_as_bytes
+    tempstore
 ):
     """Opening a read-only store with a wrong application_id should warn."""
     await tempstore.set("key", make_buffer(b"data"))

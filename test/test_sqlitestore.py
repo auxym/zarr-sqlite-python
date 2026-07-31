@@ -6,6 +6,8 @@ import pytest
 from zarr.core.buffer import default_buffer_prototype
 from zarr.abc.store import OffsetByteRequest, RangeByteRequest, SuffixByteRequest
 
+from test.helpers import make_buffer, collect
+
 
 # ---------------------------------------------------------------------------
 # Core get/set tests
@@ -13,7 +15,7 @@ from zarr.abc.store import OffsetByteRequest, RangeByteRequest, SuffixByteReques
 
 
 @pytest.mark.asyncio
-async def test_set_and_get(memstore, make_buffer):
+async def test_set_and_get(memstore):
     data = b"hello world"
     await memstore.set("foo", make_buffer(data))
     buf = await memstore.get("foo", default_buffer_prototype())
@@ -27,7 +29,7 @@ async def test_get_nonexistent(memstore):
 
 
 @pytest.mark.asyncio
-async def test_get_offset_byte_request(memstore, make_buffer):
+async def test_get_offset_byte_request(memstore):
     data = b"abcdefghij"
     await memstore.set("k", make_buffer(data))
     buf = await memstore.get(
@@ -37,7 +39,7 @@ async def test_get_offset_byte_request(memstore, make_buffer):
 
 
 @pytest.mark.asyncio
-async def test_get_offset_beyond_length(memstore, make_buffer):
+async def test_get_offset_beyond_length(memstore):
     data = b"abc"
     await memstore.set("k", make_buffer(data))
     buf = await memstore.get(
@@ -47,7 +49,7 @@ async def test_get_offset_beyond_length(memstore, make_buffer):
 
 
 @pytest.mark.asyncio
-async def test_get_range_byte_request(memstore, make_buffer):
+async def test_get_range_byte_request(memstore):
     data = b"abcdefghij"
     await memstore.set("k", make_buffer(data))
     buf = await memstore.get(
@@ -59,7 +61,7 @@ async def test_get_range_byte_request(memstore, make_buffer):
 
 
 @pytest.mark.asyncio
-async def test_get_range_clamped(memstore, make_buffer):
+async def test_get_range_clamped(memstore):
     data = b"abcdefghijkl"
     await memstore.set("k", make_buffer(data))
     buf = await memstore.get(
@@ -71,7 +73,7 @@ async def test_get_range_clamped(memstore, make_buffer):
 
 
 @pytest.mark.asyncio
-async def test_get_suffix_byte_request(memstore, make_buffer):
+async def test_get_suffix_byte_request(memstore):
     data = b"abcdefghij"
     await memstore.set("k", make_buffer(data))
     buf = await memstore.get(
@@ -82,7 +84,7 @@ async def test_get_suffix_byte_request(memstore, make_buffer):
 
 
 @pytest.mark.asyncio
-async def test_get_suffix_larger_than_length(memstore, make_buffer):
+async def test_get_suffix_larger_than_length(memstore):
     data = b"abc"
     await memstore.set("k", make_buffer(data))
     buf = await memstore.get(
@@ -92,7 +94,7 @@ async def test_get_suffix_larger_than_length(memstore, make_buffer):
 
 
 @pytest.mark.asyncio
-async def test_get_non_bytes(tempstore, make_buffer):
+async def test_get_non_bytes(tempstore):
     await tempstore.set("dummy", make_buffer(b"data"))
     con = sqlite3.connect(tempstore.database, uri=True)
     con.execute("INSERT INTO zarr (k, v) VALUES (?, ?)", ("k", 5))
@@ -102,7 +104,7 @@ async def test_get_non_bytes(tempstore, make_buffer):
 
 
 @pytest.mark.asyncio
-async def test_get_unsupported_byte_range(memstore, make_buffer):
+async def test_get_unsupported_byte_range(memstore):
     data = b"abc"
     await memstore.set("k", make_buffer(data))
     bad = object()
@@ -112,7 +114,7 @@ async def test_get_unsupported_byte_range(memstore, make_buffer):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("store_fixture", ["memstore", "tempstore"])
-async def test_get_partial_values(request, store_fixture, make_buffer):
+async def test_get_partial_values(request, store_fixture):
     """We run this both in-memory and with a file because the blob
     handle used for the partial request can cause concurrency issues
     (sqlite3 OperationalError: table locked) with in-memory databases.
@@ -141,7 +143,7 @@ async def test_get_partial_values(request, store_fixture, make_buffer):
 
 
 @pytest.mark.asyncio
-async def test_set_overwrites(memstore, make_buffer):
+async def test_set_overwrites(memstore):
     await memstore.set("k", make_buffer(b"first"))
     buf = await memstore.get("k", default_buffer_prototype())
     assert buf.to_bytes() == b"first"
@@ -152,7 +154,7 @@ async def test_set_overwrites(memstore, make_buffer):
 
 
 @pytest.mark.asyncio
-async def test_delete_erases_key(memstore, make_buffer):
+async def test_delete_erases_key(memstore):
     await memstore.set("k", make_buffer(b"data"))
     assert await memstore.exists("k")
     await memstore.delete("k")
@@ -166,7 +168,7 @@ async def test_delete_missing_key_is_noop(memstore):
 
 
 @pytest.mark.asyncio
-async def test_delete_dir_erases_prefix(memstore, make_buffer):
+async def test_delete_dir_erases_prefix(memstore):
     await memstore.set("a/x", make_buffer(b"1"))
     await memstore.set("a/y", make_buffer(b"2"))
     await memstore.set("b/z", make_buffer(b"3"))
@@ -177,14 +179,14 @@ async def test_delete_dir_erases_prefix(memstore, make_buffer):
 
 
 @pytest.mark.asyncio
-async def test_delete_dir_raises_when_key_is_leaf(memstore, make_buffer):
+async def test_delete_dir_raises_when_key_is_leaf(memstore):
     await memstore.set("a", make_buffer(b"leaf"))
     with pytest.raises(ValueError):
         await memstore.delete_dir("a")
 
 
 @pytest.mark.asyncio
-async def test_delete_dir(memstore, make_buffer):
+async def test_delete_dir(memstore):
     await memstore.set("a/b", make_buffer(b"1"))
     await memstore.delete_dir("a/")
     assert not await memstore.exists("a/b")
@@ -196,7 +198,7 @@ async def test_delete_dir(memstore, make_buffer):
 
 
 @pytest.mark.asyncio
-async def test_list_returns_all_keys(memstore, make_buffer, collect):
+async def test_list_returns_all_keys(memstore):
     await memstore.set("a", make_buffer(b"1"))
     await memstore.set("b/c", make_buffer(b"2"))
     await memstore.set("b/d", make_buffer(b"3"))
@@ -205,12 +207,12 @@ async def test_list_returns_all_keys(memstore, make_buffer, collect):
 
 
 @pytest.mark.asyncio
-async def test_list_empty(memstore, collect):
+async def test_list_empty(memstore):
     assert await collect(memstore.list()) == []
 
 
 @pytest.mark.asyncio
-async def test_list_prefix(memstore, make_buffer, collect):
+async def test_list_prefix(memstore):
     await memstore.set("a/1", make_buffer(b"1"))
     await memstore.set("a/2", make_buffer(b"2"))
     await memstore.set("ab/3", make_buffer(b"3"))
@@ -220,7 +222,7 @@ async def test_list_prefix(memstore, make_buffer, collect):
 
 
 @pytest.mark.asyncio
-async def test_list_prefix_root(memstore, make_buffer, collect):
+async def test_list_prefix_root(memstore):
     await memstore.set("a/1", make_buffer(b"1"))
     await memstore.set("b/2", make_buffer(b"2"))
     keys = set(await collect(memstore.list_prefix("")))
@@ -228,13 +230,13 @@ async def test_list_prefix_root(memstore, make_buffer, collect):
 
 
 @pytest.mark.asyncio
-async def test_list_prefix_no_match(memstore, make_buffer, collect):
+async def test_list_prefix_no_match(memstore):
     await memstore.set("a/1", make_buffer(b"1"))
     assert await collect(memstore.list_prefix("zzz/")) == []
 
 
 @pytest.mark.asyncio
-async def test_list_dir_root(memstore, make_buffer, collect):
+async def test_list_dir_root(memstore):
     await memstore.set("a/1", make_buffer(b"1"))
     await memstore.set("b/2", make_buffer(b"2"))
     await memstore.set("c/d/3", make_buffer(b"3"))
@@ -245,7 +247,7 @@ async def test_list_dir_root(memstore, make_buffer, collect):
 
 
 @pytest.mark.asyncio
-async def test_list_dir_nested(memstore, make_buffer, collect):
+async def test_list_dir_nested(memstore):
     await memstore.set("a/x", make_buffer(b"1"))
     await memstore.set("a/y", make_buffer(b"2"))
     await memstore.set("a/sub/z", make_buffer(b"3"))
@@ -254,13 +256,13 @@ async def test_list_dir_nested(memstore, make_buffer, collect):
 
 
 @pytest.mark.asyncio
-async def test_list_dir_no_match(memstore, make_buffer, collect):
+async def test_list_dir_no_match(memstore):
     await memstore.set("a/1", make_buffer(b"1"))
     assert await collect(memstore.list_dir("zzz/")) == []
 
 
 @pytest.mark.asyncio
-async def test_list_dir_empty_prefix_yields_nothing(memstore, collect):
+async def test_list_dir_empty_prefix_yields_nothing(memstore):
     assert await collect(memstore.list_dir("nonexistent/")) == []
 
 
@@ -270,7 +272,7 @@ async def test_list_dir_empty_prefix_yields_nothing(memstore, collect):
 
 
 @pytest.mark.asyncio
-async def test_set_if_not_exists(memstore, make_buffer):
+async def test_set_if_not_exists(memstore):
     await memstore.set_if_not_exists("k", make_buffer(b"first"))
     await memstore.set_if_not_exists("k", make_buffer(b"second"))
     buf = await memstore.get("k", default_buffer_prototype())
@@ -283,14 +285,14 @@ async def test_set_if_not_exists(memstore, make_buffer):
 
 
 @pytest.mark.asyncio
-async def test_exists(memstore, make_buffer):
+async def test_exists(memstore):
     assert not await memstore.exists("k")
     await memstore.set("k", make_buffer(b"data"))
     assert await memstore.exists("k")
 
 
 @pytest.mark.asyncio
-async def test_is_empty(memstore, make_buffer):
+async def test_is_empty(memstore):
     assert await memstore.is_empty("")
     assert await memstore.is_empty("a/")
 
@@ -301,7 +303,7 @@ async def test_is_empty(memstore, make_buffer):
 
 
 @pytest.mark.asyncio
-async def test_clear(memstore, make_buffer, collect):
+async def test_clear(memstore):
     await memstore.set("a", make_buffer(b"1"))
     await memstore.set("b/c", make_buffer(b"2"))
     assert len(await collect(memstore.list())) == 2
@@ -315,7 +317,7 @@ async def test_clear(memstore, make_buffer, collect):
 
 
 @pytest.mark.asyncio
-async def test_getsize(memstore, make_buffer):
+async def test_getsize(memstore):
     await memstore.set("k", make_buffer(b"12345"))
     assert await memstore.getsize("k") == 5
 
@@ -327,7 +329,7 @@ async def test_getsize(memstore, make_buffer):
 
 
 @pytest.mark.asyncio
-async def test_getsize_prefix(memstore, make_buffer):
+async def test_getsize_prefix(memstore):
     await memstore.set("a/1", make_buffer(b"abc"))
     await memstore.set("a/2", make_buffer(b"de"))
     await memstore.set("a/3", make_buffer(b""))
@@ -338,7 +340,7 @@ async def test_getsize_prefix(memstore, make_buffer):
 
 
 @pytest.mark.asyncio
-async def test_getsize_prefix_empty(memstore, make_buffer, collect):
+async def test_getsize_prefix_empty(memstore):
     """getsize_prefix with empty prefix returns total size of all values."""
     await memstore.set("a", make_buffer(b"abc"))
     await memstore.set("b/c", make_buffer(b"de"))
@@ -356,7 +358,7 @@ async def test_getsize_prefix_empty(memstore, make_buffer, collect):
 
 
 @pytest.mark.asyncio
-async def test_delete_dir_empty_prefix(memstore, make_buffer, collect):
+async def test_delete_dir_empty_prefix(memstore):
     """delete_dir with empty prefix deletes all keys."""
     await memstore.set("a/b", make_buffer(b"1"))
     await memstore.set("c/d", make_buffer(b"2"))
@@ -366,7 +368,7 @@ async def test_delete_dir_empty_prefix(memstore, make_buffer, collect):
 
 
 @pytest.mark.asyncio
-async def test_delete_dir_empty_prefix_raises_when_root_key(memstore, make_buffer):
+async def test_delete_dir_empty_prefix_raises_when_root_key(memstore):
     """delete_dir with empty prefix raises when the root key '' exists."""
     await memstore.set("", make_buffer(b"root"))
     with pytest.raises(ValueError, match="Cannot delete directory"):
