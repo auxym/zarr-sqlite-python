@@ -136,34 +136,33 @@ def test_group_listing_methods(tempstore):
     assert set(root) == {"a", "b"}
 
 
-def test_store_array_creates_file_and_persists():
+def test_store_array_creates_file_and_persists(tmp_path):
     """Ensure file is created automatically when it doesn't exist"""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        fname = Path(tmpdir) / "test1.zarrdb"
-        store = SQLiteStore(fname, read_only=False)
-        root = zarr.open(store=store, mode="a")
-        group1 = root.create_group("group1")
+    fname = tmp_path / "test1.zarrdb"
+    assert not fname.exists()
+    store = SQLiteStore(fname, read_only=False)
+    root = zarr.open(store=store, mode="a")
+    group1 = root.create_group("group1")
 
-        i = np.arange(80000) / 60.0
-        x = i + np.random.normal(size=len(i), scale=1.5)
-        y = (
-            np.sin(x / 13)
-            + 0.7 * np.cos(x / 47)
-            + np.random.normal(size=len(i), scale=0.05)
-        )
-        x.shape = (400, 200)
-        y.shape = (200, 400)
+    i = np.arange(80000) / 60.0
+    x = i + np.random.normal(size=len(i), scale=1.5)
+    y = (
+        np.sin(x / 13)
+        + 0.7 * np.cos(x / 47)
+        + np.random.normal(size=len(i), scale=0.05)
+    )
+    x.shape = (400, 200)
+    y.shape = (200, 400)
 
-        group1.create_array(data=x, name="xdat")
-        group1.create_array(data=y, name="ydat")
-        store.close()
+    group1.create_array(data=x, name="xdat")
+    group1.create_array(data=y, name="ydat")
+    store.close()
 
-        read_root = zarr.open(store=SQLiteStore(fname, read_only=True), mode="r")
-        assert np.array_equal(read_root["group1/ydat"][:], y)
-        assert np.array_equal(read_root["group1/xdat"], x)
+    read_root = zarr.open(store=SQLiteStore(fname, read_only=True), mode="r")
+    assert np.array_equal(read_root["group1/ydat"][:], y)
+    assert np.array_equal(read_root["group1/xdat"], x)
 
-        # Ensure store is closed so tmpdir can be safely deleted
-        read_root.store.close()
+    read_root.store.close()
 
 
 def test_store_close_cleans_up_wal_files(tempstore):

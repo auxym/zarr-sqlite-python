@@ -40,20 +40,14 @@ def get_as_bytes():
 @pytest.fixture
 def memstore():
     """An in-memory SQLiteStore."""
-    s = SQLiteStore(":memory:")
-    yield s
-    s.close()
+    with SQLiteStore(":memory:") as s:
+        yield s
 
 
 @pytest.fixture
 def tempstore():
     """A file-backed SQLiteStore using a temporary file."""
-    fp = NamedTemporaryFile(suffix=".db", delete=False)
-    fp.close()
-    s = SQLiteStore(fp.name)
-    yield s
-    s.close()
-    try:
-        os.unlink(fp.name)
-    except PermissionError:
-        pass
+    with NamedTemporaryFile(suffix=".zarrdb", delete=True, delete_on_close=False) as fp:
+        fp.close()
+        with SQLiteStore(fp.name) as s:
+            yield s

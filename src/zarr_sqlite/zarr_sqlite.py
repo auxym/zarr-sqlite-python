@@ -223,11 +223,11 @@ class SQLiteStore(Store):
         await self._conn.execute("PRAGMA page_size=" + str(int(self._page_size)))
         await self._conn.execute(
             "CREATE TABLE IF NOT EXISTS sqlitestore_metadata("
-            "k TEXT PRIMARY KEY NOT NULL, v TEXT NOT NULL)"
+            "k TEXT PRIMARY KEY NOT NULL COLLATE BINARY, v TEXT NOT NULL)"
         )
         await self._conn.execute(
             "CREATE TABLE IF NOT EXISTS zarr("
-            "k TEXT PRIMARY KEY NOT NULL, v BLOB NOT NULL)"
+            "k TEXT PRIMARY KEY NOT NULL COLLATE BINARY, v BLOB NOT NULL)"
         )
         await self._conn.execute(
             "PRAGMA application_id = " + str(int(_SQLITESTORE_APPLICATION_ID))
