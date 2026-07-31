@@ -50,8 +50,7 @@ def _validate_key(key: str):
 
     The empty string is a valid key: it addresses a store's root resource as a single blob.
     """
-    is_valid = not (key.startswith("/") or key.endswith("/") or "//" in key)
-    if not is_valid:
+    if key[0] == "/" or key[-1] == "/" or "//" in key:
         raise ValueError(f"Invalid key '{key}'")
 
 
@@ -195,9 +194,10 @@ class SQLiteStore(Store):
             raise ValueError("store is already open")
 
         if not self.read_only and self._journal_mode is not None:
-            # PRAGMA journal_mode cannot be changed within a transaction,
-            # and aiosqlite with autocommit=False keeps a transaction open.
-            # Open a temporary connection in autocommit mode to set it.
+            # PRAGMA journal_mode cannot be changed within a transaction.  We
+            # need to set autocommit=True but aiosqlite does not support
+            # changing autocommit on an open connection.  Open a temporary
+            # connection with autocommit=True mode to set journal_mode.
             if self._journal_mode not in {"DELETE", "WAL"}:
                 raise ValueError(f"Invalid journal_mode: {self._journal_mode}")
             tmp_conn = await aiosqlite.connect(
@@ -205,8 +205,10 @@ class SQLiteStore(Store):
                 uri=is_database_uri(self._database),
                 autocommit=True
             )
-            await tmp_conn.execute("PRAGMA journal_mode=" + self._journal_mode)
-            await tmp_conn.close()
+            try:
+                await tmp_conn.execute("PRAGMA journal_mode=" + self._journal_mode)
+            finally:
+                await tmp_conn.close()
 
         self._conn = await aiosqlite.connect(
             self._database,
@@ -333,7 +335,7 @@ class SQLiteStore(Store):
                     f"(expected {_SQLITESTORE_APPLICATION_ID:#x})."
                 )
 
-        metadata = dict(metadata_rows) if metadata_rows else {}
+        metadata: dict[str, str] = {k: v for k, v in metadata_rows} if metadata_rows else {}
         for k in metadata_keys:
             if k not in metadata:
                 raise ValueError(
@@ -524,6 +526,7 @@ class SQLiteStore(Store):
         self._check_writable()
         _validate_key(key)
         await self._ensure_open()
+        assert self._conn is not None
         async with self._transaction():
             await self._conn.execute(
                 "INSERT OR REPLACE INTO zarr (k, v) VALUES (?, ?)",
@@ -535,6 +538,7 @@ class SQLiteStore(Store):
         self._check_writable()
         _validate_key(key)
         await self._ensure_open()
+        assert self._conn is not None
         async with self._transaction():
             await self._conn.execute(
                 "INSERT OR IGNORE INTO zarr (k, v) VALUES (?, ?)",
@@ -545,6 +549,7 @@ class SQLiteStore(Store):
     async def delete(self, key: str) -> None:
         self._check_writable()
         await self._ensure_open()
+        assert self._conn is not None
         async with self._transaction():
             await self._conn.execute("DELETE FROM zarr WHERE k = ?", (key,))
 
