@@ -50,7 +50,7 @@ def _validate_key(key: str):
 
     The empty string is a valid key: it addresses a store's root resource as a single blob.
     """
-    if key[0] == "/" or key[-1] == "/" or "//" in key:
+    if key.startswith("/") or key.endswith("/") or "//" in key:
         raise ValueError(f"Invalid key '{key}'")
 
 
@@ -201,9 +201,7 @@ class SQLiteStore(Store):
             if self._journal_mode not in {"DELETE", "WAL"}:
                 raise ValueError(f"Invalid journal_mode: {self._journal_mode}")
             tmp_conn = await aiosqlite.connect(
-                self._database,
-                uri=is_database_uri(self._database),
-                autocommit=True
+                self._database, uri=is_database_uri(self._database), autocommit=True
             )
             try:
                 await tmp_conn.execute("PRAGMA journal_mode=" + self._journal_mode)
@@ -218,8 +216,7 @@ class SQLiteStore(Store):
 
         # Create schema only on empty file to avoid clobbering an existing file.
         if not self._read_only and await self._db_is_empty():
-            async with self._transaction():
-                await self._create_schema()
+            await self._create_schema()
 
         await self._validate_schema()
 
@@ -233,53 +230,46 @@ class SQLiteStore(Store):
 
     async def _create_schema(self) -> None:
         assert self._conn is not None
-        async with self._conn.execute(
-            "PRAGMA page_size=" + str(int(self._page_size))
-        ):
-            pass
-        async with self._conn.execute(
-            "CREATE TABLE IF NOT EXISTS sqlitestore_metadata("
-            "k TEXT PRIMARY KEY NOT NULL, v TEXT NOT NULL)"
-        ):
-            pass
-        async with self._conn.execute(
-            "CREATE TABLE IF NOT EXISTS zarr("
-            "k TEXT PRIMARY KEY NOT NULL, v BLOB NOT NULL)"
-        ):
-            pass
-        async with self._conn.execute(
-            "PRAGMA application_id = " + str(_SQLITESTORE_APPLICATION_ID)
-        ):
-            pass
-        async with self._conn.executemany(
-            "INSERT OR IGNORE INTO sqlitestore_metadata(k, v) VALUES (?, ?)",
-            [
-                ("sqlitestore_version", _SQLITESTORE_SPEC_VERSION),
-                ("compatible_flags", ""),
-                ("incompatible_flags", ""),
-                ("created_by", _CREATED_BY),
-            ],
-        ):
-            pass
-        await self._update_timestamp()
+        async with self._transaction():
+            await self._conn.execute("PRAGMA page_size=" + str(int(self._page_size)))
+            await self._conn.execute(
+                "CREATE TABLE IF NOT EXISTS sqlitestore_metadata("
+                "k TEXT PRIMARY KEY NOT NULL, v TEXT NOT NULL)"
+            )
+            await self._conn.execute(
+                "CREATE TABLE IF NOT EXISTS zarr("
+                "k TEXT PRIMARY KEY NOT NULL, v BLOB NOT NULL)"
+            )
+            await self._conn.execute(
+                "PRAGMA application_id = " + str(int(_SQLITESTORE_APPLICATION_ID))
+            )
+            await self._conn.executemany(
+                "INSERT OR IGNORE INTO sqlitestore_metadata(k, v) VALUES (?, ?)",
+                [
+                    ("sqlitestore_version", _SQLITESTORE_SPEC_VERSION),
+                    ("compatible_flags", ""),
+                    ("incompatible_flags", ""),
+                    ("created_by", _CREATED_BY),
+                ],
+            )
+            await self._update_timestamp()
 
     async def _update_timestamp(self) -> None:
         assert self._conn is not None
         now = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
-        async with self._conn.execute(
-            "INSERT INTO sqlitestore_metadata(k, v) VALUES (?, ?) "
-            "ON CONFLICT(k) DO UPDATE SET v = excluded.v",
-            ("created_time", now),
-        ):
-            pass
+        async with self._transaction():
+            await self._conn.execute(
+                "INSERT INTO sqlitestore_metadata(k, v) VALUES (?, ?) "
+                "ON CONFLICT(k) DO UPDATE SET v = excluded.v",
+                ("created_time", now),
+            )
 
     async def _db_is_empty(self) -> bool:
         assert self._conn is not None
         async with self._conn.execute(
             """
             SELECT EXISTS (
-                SELECT 1
-                FROM sqlite_schema
+                SELECT 1 FROM sqlite_schema
                 WHERE type IN ('table', 'view', 'index', 'trigger')
                 AND name NOT LIKE 'sqlite_%'
             )
@@ -312,12 +302,6 @@ class SQLiteStore(Store):
         assert app_id_row is not None
         app_id = app_id_row[0]
 
-        async with self._conn.execute(
-            "SELECT k, v FROM sqlitestore_metadata WHERE k IN (?, ?, ?)",
-            metadata_keys,
-        ) as cursor:
-            metadata_rows = await cursor.fetchall()
-
         if app_id != _SQLITESTORE_APPLICATION_ID:
             if self.read_only:
                 warnings.warn(
@@ -335,7 +319,15 @@ class SQLiteStore(Store):
                     f"(expected {_SQLITESTORE_APPLICATION_ID:#x})."
                 )
 
-        metadata: dict[str, str] = {k: v for k, v in metadata_rows} if metadata_rows else {}
+        async with self._conn.execute(
+            "SELECT k, v FROM sqlitestore_metadata WHERE k IN (?, ?, ?)",
+            metadata_keys,
+        ) as cursor:
+            metadata_rows = await cursor.fetchall()
+
+        metadata: dict[str, str] = (
+            {k: v for k, v in metadata_rows} if metadata_rows else {}
+        )
         for k in metadata_keys:
             if k not in metadata:
                 raise ValueError(
@@ -414,18 +406,16 @@ class SQLiteStore(Store):
     async def is_empty(self, prefix: str) -> bool:
         await self._ensure_open()
         assert self._conn is not None
+
+        params = ()
         if prefix == "":
-            async with self._conn.execute(
-                "SELECT EXISTS(SELECT 1 FROM zarr LIMIT 1)"
-            ) as cursor:
-                row = await cursor.fetchone()
+            sql = "SELECT EXISTS(SELECT 1 FROM zarr LIMIT 1)", ()
         else:
-            bounds = self._get_text_boundaries(prefix)
-            async with self._conn.execute(
-                "SELECT EXISTS(SELECT 1 FROM zarr WHERE k > ? AND k < ? LIMIT 1)",
-                bounds,
-            ) as cursor:
-                row = await cursor.fetchone()
+            params = self._get_text_boundaries(prefix)
+            sql = "SELECT EXISTS(SELECT 1 FROM zarr WHERE k > ? AND k < ? LIMIT 1)"
+
+        async with self._conn.execute(sql, params) as cursor:
+            row = await cursor.fetchone()
         return row is not None and row[0] == 0
 
     @override
@@ -435,8 +425,7 @@ class SQLiteStore(Store):
         await self._ensure_open()
         assert self._conn is not None
         async with self._transaction():
-            async with self._conn.execute("DROP TABLE IF EXISTS zarr"):
-                pass
+            await self._conn.execute("DROP TABLE IF EXISTS zarr")
             await self._create_schema()
 
     @override
@@ -639,9 +628,7 @@ class SQLiteStore(Store):
         await self._ensure_open()
         assert self._conn is not None
         if prefix == "":
-            async with self._conn.execute(
-                "SELECT SUM(LENGTH(v)) FROM zarr"
-            ) as cursor:
+            async with self._conn.execute("SELECT SUM(LENGTH(v)) FROM zarr") as cursor:
                 size_row = await cursor.fetchone()
         else:
             bounds = self._get_text_boundaries(prefix)
