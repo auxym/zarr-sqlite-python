@@ -118,10 +118,10 @@ async def test_in_memory_isolates_data(make_buffer):
 
 
 @pytest.mark.asyncio
-async def test_with_read_only(tmpfile_store, make_buffer, get_as_bytes):
-    await tmpfile_store.set("a", make_buffer(b"data"))
+async def test_with_read_only(tempstore, make_buffer, get_as_bytes):
+    await tempstore.set("a", make_buffer(b"data"))
 
-    ro = tmpfile_store.with_read_only(read_only=True)
+    ro = tempstore.with_read_only(read_only=True)
     assert ro.read_only is True
 
     assert await get_as_bytes(ro, "a") == b"data"
@@ -132,10 +132,10 @@ async def test_with_read_only(tmpfile_store, make_buffer, get_as_bytes):
 
 
 @pytest.mark.asyncio
-async def test_read_only_raises(tmpfile_store, make_buffer):
-    await tmpfile_store.set("a", make_buffer(b"data"))
-    tmpfile_store.close()
-    store = SQLiteStore(tmpfile_store.database, read_only=True)
+async def test_read_only_raises(tempstore, make_buffer):
+    await tempstore.set("a", make_buffer(b"data"))
+    tempstore.close()
+    store = SQLiteStore(tempstore.database, read_only=True)
 
     with pytest.raises(ValueError):
         await store.delete("a")
@@ -156,19 +156,19 @@ async def test_read_only_raises(tmpfile_store, make_buffer):
 
 @pytest.mark.asyncio
 async def test_open_existing_valid_file_writable(
-    tmpfile_store, make_buffer, get_as_bytes, collect
+    tempstore, make_buffer, get_as_bytes, collect
 ):
     """Opening an existing valid file in writable mode should not recreate schema.
 
     The _db_is_empty() check should skip schema creation when the database
     already contains tables, and _validate_schema() should succeed.
     """
-    await tmpfile_store.set("a", make_buffer(b"first"))
-    await tmpfile_store.set("b", make_buffer(b"second"))
-    tmpfile_store.close()
+    await tempstore.set("a", make_buffer(b"first"))
+    await tempstore.set("b", make_buffer(b"second"))
+    tempstore.close()
 
     # Open a *new* store object pointing to the same file in writable mode.
-    store = SQLiteStore(tmpfile_store.database, read_only=False)
+    store = SQLiteStore(tempstore.database, read_only=False)
     assert await get_as_bytes(store, "a") == b"first"
     assert await get_as_bytes(store, "b") == b"second"
 
@@ -183,30 +183,30 @@ async def test_open_existing_valid_file_writable(
 
 
 @pytest.mark.asyncio
-async def test_reuse_after_close(tmpfile_store, make_buffer, get_as_bytes, collect):
+async def test_reuse_after_close(tempstore, make_buffer, get_as_bytes, collect):
     """A file-based SQLiteStore can be re-used after close().
 
     The data written before close() must persist, and new operations must
     work after the store is implicitly re-opened.
     """
     # Write data before closing
-    await tmpfile_store.set("a", make_buffer(b"first"))
-    await tmpfile_store.set("b", make_buffer(b"second"))
+    await tempstore.set("a", make_buffer(b"first"))
+    await tempstore.set("b", make_buffer(b"second"))
 
     # Close the store
-    tmpfile_store.close()
+    tempstore.close()
 
     # Re-use the store: an operation triggers _ensure_open -> _open,
     # which creates a new connection pool and re-creates/validates the schema.
-    assert await get_as_bytes(tmpfile_store, "a") == b"first"
-    assert await get_as_bytes(tmpfile_store, "b") == b"second"
+    assert await get_as_bytes(tempstore, "a") == b"first"
+    assert await get_as_bytes(tempstore, "b") == b"second"
 
     # New writes must also work after re-open
-    await tmpfile_store.set("c", make_buffer(b"third"))
-    assert await get_as_bytes(tmpfile_store, "c") == b"third"
+    await tempstore.set("c", make_buffer(b"third"))
+    assert await get_as_bytes(tempstore, "c") == b"third"
 
     # Listing must reflect all keys
-    keys = set(await collect(tmpfile_store.list()))
+    keys = set(await collect(tempstore.list()))
     assert keys == {"a", "b", "c"}
 
-    tmpfile_store.close()
+    tempstore.close()

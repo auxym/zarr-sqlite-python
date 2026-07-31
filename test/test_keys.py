@@ -34,31 +34,31 @@ def test_validate_key_rejects_leading_slash():
 
 
 @pytest.mark.asyncio
-async def test_case_sensitive_keys_get_set(store, make_buffer, get_as_bytes):
+async def test_case_sensitive_keys_get_set(memstore, make_buffer, get_as_bytes):
     """Keys are case-sensitive: 'Key' and 'key' are different keys."""
-    await store.set("Key", make_buffer(b"uppercase"))
-    await store.set("key", make_buffer(b"lowercase"))
-    assert await get_as_bytes(store, "Key") == b"uppercase"
-    assert await get_as_bytes(store, "key") == b"lowercase"
+    await memstore.set("Key", make_buffer(b"uppercase"))
+    await memstore.set("key", make_buffer(b"lowercase"))
+    assert await get_as_bytes(memstore, "Key") == b"uppercase"
+    assert await get_as_bytes(memstore, "key") == b"lowercase"
 
 
 @pytest.mark.asyncio
-async def test_case_sensitive_keys_list(store, make_buffer, collect):
+async def test_case_sensitive_keys_list(memstore, make_buffer, collect):
     """list returns keys with different cases as distinct entries."""
-    await store.set("Apple", make_buffer(b"1"))
-    await store.set("apple", make_buffer(b"2"))
-    await store.set("APPLE", make_buffer(b"3"))
-    keys = set(await collect(store.list()))
+    await memstore.set("Apple", make_buffer(b"1"))
+    await memstore.set("apple", make_buffer(b"2"))
+    await memstore.set("APPLE", make_buffer(b"3"))
+    keys = set(await collect(memstore.list()))
     assert keys == {"Apple", "apple", "APPLE"}
 
 
 @pytest.mark.asyncio
-async def test_case_sensitive_list_prefix(store, make_buffer, collect):
+async def test_case_sensitive_list_prefix(memstore, make_buffer, collect):
     """list_prefix is case-sensitive."""
-    await store.set("Data/a", make_buffer(b"1"))
-    await store.set("data/b", make_buffer(b"2"))
-    await store.set("DATA/c", make_buffer(b"3"))
-    keys = set(await collect(store.list_prefix("Data/")))
+    await memstore.set("Data/a", make_buffer(b"1"))
+    await memstore.set("data/b", make_buffer(b"2"))
+    await memstore.set("DATA/c", make_buffer(b"3"))
+    keys = set(await collect(memstore.list_prefix("Data/")))
     assert keys == {"Data/a"}
 
 
@@ -68,59 +68,59 @@ async def test_case_sensitive_list_prefix(store, make_buffer, collect):
 
 
 @pytest.mark.asyncio
-async def test_non_alphanumeric_keys_get_set(store, make_buffer, get_as_bytes):
+async def test_non_alphanumeric_keys_get_set(memstore, make_buffer, get_as_bytes):
     """Keys with non-alphanumeric characters can be stored and retrieved."""
     special_keys = ["a%b", "a^b", "a¸b", "a_b", "a-b.c", "a+b", "a=b"]
     for key in special_keys:
-        await store.set(key, make_buffer(b"data"))
-        assert await get_as_bytes(store, key) == b"data"
+        await memstore.set(key, make_buffer(b"data"))
+        assert await get_as_bytes(memstore, key) == b"data"
 
 
 @pytest.mark.asyncio
-async def test_non_alphanumeric_keys_list(store, make_buffer, collect):
+async def test_non_alphanumeric_keys_list(memstore, make_buffer, collect):
     """list returns keys with non-alphanumeric characters."""
     keys_to_set = ["a%b", "a^b", "a¸b", "a_b", "a-b.c"]
     for key in keys_to_set:
-        await store.set(key, make_buffer(b"data"))
-    result = set(await collect(store.list()))
+        await memstore.set(key, make_buffer(b"data"))
+    result = set(await collect(memstore.list()))
     assert result == set(keys_to_set)
 
 
 @pytest.mark.asyncio
-async def test_list_prefix_with_special_chars(store, make_buffer, collect):
+async def test_list_prefix_with_special_chars(memstore, make_buffer, collect):
     """list_prefix works with prefixes containing non-glob special characters."""
-    await store.set("a%b/x", make_buffer(b"1"))
-    await store.set("a%b/y", make_buffer(b"2"))
-    await store.set("a^b/z", make_buffer(b"3"))
-    keys = set(await collect(store.list_prefix("a%b/")))
+    await memstore.set("a%b/x", make_buffer(b"1"))
+    await memstore.set("a%b/y", make_buffer(b"2"))
+    await memstore.set("a^b/z", make_buffer(b"3"))
+    keys = set(await collect(memstore.list_prefix("a%b/")))
     assert keys == {"a%b/x", "a%b/y"}
 
 
 @pytest.mark.asyncio
-async def test_list_dir_with_special_chars(store, make_buffer, collect):
+async def test_list_dir_with_special_chars(memstore, make_buffer, collect):
     """list_dir works with prefixes containing non-glob special characters."""
-    await store.set("a%b/x", make_buffer(b"1"))
-    await store.set("a%b/y", make_buffer(b"2"))
-    await store.set("a%b/sub/z", make_buffer(b"3"))
-    entries = set(await collect(store.list_dir("a%b/")))
+    await memstore.set("a%b/x", make_buffer(b"1"))
+    await memstore.set("a%b/y", make_buffer(b"2"))
+    await memstore.set("a%b/sub/z", make_buffer(b"3"))
+    entries = set(await collect(memstore.list_dir("a%b/")))
     assert entries == {"x", "y", "sub/"}
 
 
 @pytest.mark.asyncio
-async def test_list_prefix_glob_star_in_prefix(store, make_buffer, collect):
+async def test_list_prefix_glob_star_in_prefix(memstore, make_buffer, collect):
     """list_prefix with '*' in prefix should not treat '*' as a glob wildcard."""
-    await store.set("a*x/y", make_buffer(b"1"))
-    await store.set("abx/y", make_buffer(b"2"))
-    keys = set(await collect(store.list_prefix("a*x")))
+    await memstore.set("a*x/y", make_buffer(b"1"))
+    await memstore.set("abx/y", make_buffer(b"2"))
+    keys = set(await collect(memstore.list_prefix("a*x")))
     assert keys == {"a*x/y"}
 
 
 @pytest.mark.asyncio
-async def test_list_prefix_glob_question_in_prefix(store, make_buffer, collect):
+async def test_list_prefix_glob_question_in_prefix(memstore, make_buffer, collect):
     """list_prefix with '?' in prefix should not treat '?' as a glob wildcard."""
-    await store.set("a?b/y", make_buffer(b"1"))
-    await store.set("axb/y", make_buffer(b"2"))
-    keys = set(await collect(store.list_prefix("a?b")))
+    await memstore.set("a?b/y", make_buffer(b"1"))
+    await memstore.set("axb/y", make_buffer(b"2"))
+    keys = set(await collect(memstore.list_prefix("a?b")))
     assert keys == {"a?b/y"}
 
 
@@ -130,7 +130,7 @@ async def test_list_prefix_glob_question_in_prefix(store, make_buffer, collect):
 
 
 @pytest.mark.asyncio
-async def test_unicode_keys_get_set(store, make_buffer, get_as_bytes):
+async def test_unicode_keys_get_set(memstore, make_buffer, get_as_bytes):
     """Keys with unicode characters can be stored and retrieved."""
     unicode_keys = [
         "café/data",
@@ -141,12 +141,12 @@ async def test_unicode_keys_get_set(store, make_buffer, get_as_bytes):
         "العربية/لغة",
     ]
     for key in unicode_keys:
-        await store.set(key, make_buffer(b"unicode_data"))
-        assert await get_as_bytes(store, key) == b"unicode_data"
+        await memstore.set(key, make_buffer(b"unicode_data"))
+        assert await get_as_bytes(memstore, key) == b"unicode_data"
 
 
 @pytest.mark.asyncio
-async def test_unicode_keys_list(store, make_buffer, collect):
+async def test_unicode_keys_list(memstore, make_buffer, collect):
     """list returns keys with unicode characters."""
     unicode_keys = [
         "café/data",
@@ -157,23 +157,23 @@ async def test_unicode_keys_list(store, make_buffer, collect):
         "العربية/لغة",
     ]
     for key in unicode_keys:
-        await store.set(key, make_buffer(b"unicode_data"))
-    result = set(await collect(store.list()))
+        await memstore.set(key, make_buffer(b"unicode_data"))
+    result = set(await collect(memstore.list()))
     assert result == set(unicode_keys)
 
 
 @pytest.mark.asyncio
-async def test_unicode_list_prefix(store, make_buffer, collect):
+async def test_unicode_list_prefix(memstore, make_buffer, collect):
     """list_prefix works with unicode prefixes."""
-    await store.set("café/data", make_buffer(b"1"))
-    await store.set("café/other", make_buffer(b"2"))
-    await store.set("日本語/key", make_buffer(b"3"))
-    keys = set(await collect(store.list_prefix("café/")))
+    await memstore.set("café/data", make_buffer(b"1"))
+    await memstore.set("café/other", make_buffer(b"2"))
+    await memstore.set("日本語/key", make_buffer(b"3"))
+    keys = set(await collect(memstore.list_prefix("café/")))
     assert keys == {"café/data", "café/other"}
 
 
 @pytest.mark.asyncio
-async def test_emoji_keys_get_set(store, make_buffer, get_as_bytes):
+async def test_emoji_keys_get_set(memstore, make_buffer, get_as_bytes):
     """Keys with emoji characters can be stored and retrieved."""
     emoji_keys = [
         "🎉/party",
@@ -183,12 +183,12 @@ async def test_emoji_keys_get_set(store, make_buffer, get_as_bytes):
         "🎉/data",
     ]
     for key in emoji_keys:
-        await store.set(key, make_buffer(b"emoji_data"))
-        assert await get_as_bytes(store, key) == b"emoji_data"
+        await memstore.set(key, make_buffer(b"emoji_data"))
+        assert await get_as_bytes(memstore, key) == b"emoji_data"
 
 
 @pytest.mark.asyncio
-async def test_emoji_keys_list(store, make_buffer, collect):
+async def test_emoji_keys_list(memstore, make_buffer, collect):
     """list returns keys with emoji characters."""
     emoji_keys = [
         "🎉/party",
@@ -198,23 +198,23 @@ async def test_emoji_keys_list(store, make_buffer, collect):
         "🎉/data",
     ]
     for key in emoji_keys:
-        await store.set(key, make_buffer(b"emoji_data"))
-    result = set(await collect(store.list()))
+        await memstore.set(key, make_buffer(b"emoji_data"))
+    result = set(await collect(memstore.list()))
     assert result == set(emoji_keys)
 
 
 @pytest.mark.asyncio
-async def test_emoji_list_prefix(store, make_buffer, collect):
+async def test_emoji_list_prefix(memstore, make_buffer, collect):
     """list_prefix works with emoji prefixes."""
-    await store.set("🎉/party", make_buffer(b"1"))
-    await store.set("🎉/data", make_buffer(b"2"))
-    await store.set("🎊/confetti", make_buffer(b"3"))
-    keys = set(await collect(store.list_prefix("🎉/")))
+    await memstore.set("🎉/party", make_buffer(b"1"))
+    await memstore.set("🎉/data", make_buffer(b"2"))
+    await memstore.set("🎊/confetti", make_buffer(b"3"))
+    keys = set(await collect(memstore.list_prefix("🎉/")))
     assert keys == {"🎉/party", "🎉/data"}
 
 
 @pytest.mark.asyncio
-async def test_mixed_unicode_emoji_keys(store, make_buffer, get_as_bytes, collect):
+async def test_mixed_unicode_emoji_keys(memstore, make_buffer, get_as_bytes, collect):
     """Keys with mixed unicode and emoji characters can be stored and listed."""
     mixed_keys = [
         "café/🎉",
@@ -223,7 +223,7 @@ async def test_mixed_unicode_emoji_keys(store, make_buffer, get_as_bytes, collec
         "русский/🌟",
     ]
     for key in mixed_keys:
-        await store.set(key, make_buffer(b"mixed_data"))
-        assert await get_as_bytes(store, key) == b"mixed_data"
-    result = set(await collect(store.list()))
+        await memstore.set(key, make_buffer(b"mixed_data"))
+        assert await get_as_bytes(memstore, key) == b"mixed_data"
+    result = set(await collect(memstore.list()))
     assert result == set(mixed_keys)
