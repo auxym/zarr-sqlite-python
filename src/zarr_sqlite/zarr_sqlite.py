@@ -190,7 +190,7 @@ class SQLiteStore(Store):
 
         if not self.read_only and self._journal_mode is not None:
             # PRAGMA journal_mode cannot be changed within a transaction.  We
-            # need to set autocommit=True but our connection
+            # need to set autocommit=True but our connection does not support
             # changing autocommit on an open connection.  Open a temporary
             # connection with autocommit=True mode to set journal_mode.
             if self._journal_mode not in {"DELETE", "WAL"}:
@@ -209,12 +209,18 @@ class SQLiteStore(Store):
             autocommit=False,
         )
 
-        # Create schema only on empty file to avoid clobbering an existing file.
-        if not self._read_only and await self._db_is_empty():
-            async with self._transaction():
-                await self._create_schema()
+        try:
+            # Create schema only on empty file to avoid clobbering an existing file.
+            if not self._read_only and await self._db_is_empty():
+                async with self._transaction():
+                    await self._create_schema()
 
-        await self._validate_schema()
+            await self._validate_schema()
+        except Exception:
+            # Clean-up otherwise the worker thread hangs
+            self._conn.stop(join=True)
+            self._conn = None
+            raise
 
         self._is_open = True
 
@@ -344,20 +350,11 @@ class SQLiteStore(Store):
 
     @override
     def close(self) -> None:
-        """Immediately close the store and the SQLite connection.
-
-        Calling close() shuts down the connection via its synchronous
-        ``stop(join=True)`` method, which closes the underlying SQLite
-        connection and joins the background thread.  Any in-flight
-        operations using the connection may fail and callers must ensure
-        that all operations have completed before closing the store.
-        """
-        if not self._is_open:
-            return
-        self._is_open = False
+        """Immediately close the store and the SQLite connection."""
         if self._conn is not None:
-            self._conn.stop(join=True, join_timeout=5.0)
+            self._conn.stop(join=True)
             self._conn = None
+        self._is_open = False
 
     @staticmethod
     def _get_text_boundaries(prefix: str) -> tuple[str, str]:
@@ -611,3 +608,7 @@ class SQLiteStore(Store):
         if size_row is None or size_row[0] is None:
             return 0
         return int(size_row[0])
+
+    def __del__(self):
+        if self._conn is not None:
+            self._conn.stop()
