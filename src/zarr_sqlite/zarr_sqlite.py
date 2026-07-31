@@ -23,11 +23,6 @@ from zarr.abc.store import (
 from ._version import __version__
 from ._db_utils import is_database_uri, is_in_memory_database
 
-if sqlite3.threadsafety != 3:
-    raise ImportError(
-        "SQLiteStore requires sqlite3 to be compiled in serialized threading mode."
-    )
-
 if sqlite3.sqlite_version_info < (3, 17, 7):
     raise ValueError(
         f"Unsupported SQLite version {sqlite3.sqlite_version}.The minimum supported version of sqlite is 3.17.7."
