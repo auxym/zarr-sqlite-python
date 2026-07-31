@@ -411,14 +411,19 @@ class SQLiteStore(Store):
     @override
     async def is_empty(self, prefix: str) -> bool:
         await self._ensure_open()
+        assert self._conn is not None
         if prefix == "":
-            row = await self._pool.fetchone("SELECT EXISTS(SELECT 1 FROM zarr LIMIT 1)")
+            async with self._conn.execute(
+                "SELECT EXISTS(SELECT 1 FROM zarr LIMIT 1)"
+            ) as cursor:
+                row = await cursor.fetchone()
         else:
             bounds = self._get_text_boundaries(prefix)
-            row = await self._pool.fetchone(
+            async with self._conn.execute(
                 "SELECT EXISTS(SELECT 1 FROM zarr WHERE k > ? AND k < ? LIMIT 1)",
                 bounds,
-            )
+            ) as cursor:
+                row = await cursor.fetchone()
         return row is not None and row[0] == 0
 
     @override
@@ -426,9 +431,11 @@ class SQLiteStore(Store):
         """Clear the store."""
         self._check_writable()
         await self._ensure_open()
-        async with self._pool.acquire_write() as conn:
-            await conn.execute("DROP TABLE IF EXISTS zarr")
-            await self._create_schema(conn)
+        assert self._conn is not None
+        async with self._transaction():
+            async with self._conn.execute("DROP TABLE IF EXISTS zarr"):
+                pass
+            await self._create_schema()
 
     @override
     def __str__(self) -> str:
@@ -449,42 +456,6 @@ class SQLiteStore(Store):
 
         return self.database == other.database
 
-    async def _get_partial_blob(
-        self, key: str, byte_range: ByteRequest
-    ) -> bytes | None:
-        async with self._pool.acquire() as conn:
-            row = await conn.fetchone("SELECT rowid FROM zarr WHERE k = ?", (key,))
-            if row is None:
-                return None
-            rowid = row[0]
-
-            blob = await conn.blobopen("zarr", "v", rowid)
-            blob_len = len(blob)
-
-            match byte_range:
-                case OffsetByteRequest(offset=o):
-                    start, length = min(o, blob_len), blob_len - min(o, blob_len)
-                case RangeByteRequest(start=s, end=e):
-                    start = max(0, s)
-                    end_clamped = min(blob_len, e)
-                    length = max(0, end_clamped - start)
-                case SuffixByteRequest(suffix=s):
-                    start = max(0, blob_len - s)
-                    length = blob_len - start
-                case _:
-                    raise ValueError(f"Unsupported byte range type: {type(byte_range)}")
-
-            if length == 0:
-                return b""
-
-            try:
-                await blob.seek(start)
-                data = await blob.read(length)
-            finally:
-                await blob.close()
-
-        return data
-
     @override
     async def get(
         self,
@@ -494,17 +465,37 @@ class SQLiteStore(Store):
     ) -> Buffer | None:
         _validate_key(key)
         await self._ensure_open()
+        assert self._conn is not None
 
-        data = None
-        if byte_range is None:
-            row = await self._pool.fetchone("SELECT v FROM zarr WHERE k = ?", (key,))
-            if row is not None and isinstance(row[0], bytes):
-                data = row[0]
-        else:
-            data = await self._get_partial_blob(key, byte_range)
+        async with self._conn.execute(
+            "SELECT v FROM zarr WHERE k = ?", (key,)
+        ) as cursor:
+            row = await cursor.fetchone()
 
-        if data is None:
+        if row is None:
             return None
+        data = row[0]
+        if not isinstance(data, bytes):
+            return None
+
+        if byte_range is not None:
+            # aiosqlite does not support the SQLite blob API, so we read the
+            # full blob and apply the byte range as a Python slice.
+            blob_len = len(data)
+            match byte_range:
+                case OffsetByteRequest(offset=o):
+                    start = min(o, blob_len)
+                    data = data[start:]
+                case RangeByteRequest(start=s, end=e):
+                    start = max(0, s)
+                    end_clamped = min(blob_len, max(0, e))
+                    data = data[start:end_clamped]
+                case SuffixByteRequest(suffix=s):
+                    start = max(0, blob_len - s)
+                    data = data[start:]
+                case _:
+                    raise ValueError(f"Unsupported byte range type: {type(byte_range)}")
+
         return prototype.buffer.from_bytes(data)
 
     @override
@@ -521,7 +512,11 @@ class SQLiteStore(Store):
     async def exists(self, key: str) -> bool:
         _validate_key(key)
         await self._ensure_open()
-        row = await self._pool.fetchone("SELECT v FROM zarr WHERE k = ?", (key,))
+        assert self._conn is not None
+        async with self._conn.execute(
+            "SELECT v FROM zarr WHERE k = ?", (key,)
+        ) as cursor:
+            row = await cursor.fetchone()
         return row is not None
 
     @override
@@ -529,43 +524,53 @@ class SQLiteStore(Store):
         self._check_writable()
         _validate_key(key)
         await self._ensure_open()
-        await self._pool.execute_write(
-            "INSERT OR REPLACE INTO zarr (k, v) VALUES (?, ?)", (key, value.to_bytes())
-        )
+        async with self._transaction():
+            await self._conn.execute(
+                "INSERT OR REPLACE INTO zarr (k, v) VALUES (?, ?)",
+                (key, value.to_bytes()),
+            )
 
     @override
     async def set_if_not_exists(self, key: str, value: Buffer) -> None:
         self._check_writable()
         _validate_key(key)
         await self._ensure_open()
-        await self._pool.execute_write(
-            "INSERT OR IGNORE INTO zarr (k, v) VALUES (?, ?)", (key, value.to_bytes())
-        )
+        async with self._transaction():
+            await self._conn.execute(
+                "INSERT OR IGNORE INTO zarr (k, v) VALUES (?, ?)",
+                (key, value.to_bytes()),
+            )
 
     @override
     async def delete(self, key: str) -> None:
         self._check_writable()
         await self._ensure_open()
-        await self._pool.execute_write("DELETE FROM zarr WHERE k = ?", (key,))
+        async with self._transaction():
+            await self._conn.execute("DELETE FROM zarr WHERE k = ?", (key,))
 
     @override
     async def list(self) -> AsyncIterator[str]:
         await self._ensure_open()
-        async for row in self._pool.fetch_iter("SELECT k FROM zarr"):
-            yield str(row[0])
+        assert self._conn is not None
+        async with self._conn.execute("SELECT k FROM zarr") as cursor:
+            async for row in cursor:
+                yield str(row[0])
 
     @override
     async def list_prefix(self, prefix: str) -> AsyncIterator[str]:
         await self._ensure_open()
+        assert self._conn is not None
         if prefix == "":
-            async for row in self._pool.fetch_iter("SELECT k FROM zarr"):
-                yield str(row[0])
+            async with self._conn.execute("SELECT k FROM zarr") as cursor:
+                async for row in cursor:
+                    yield str(row[0])
         else:
             bounds = self._get_text_boundaries(prefix)
-            async for row in self._pool.fetch_iter(
+            async with self._conn.execute(
                 "SELECT k FROM zarr WHERE k > ? AND k < ?", bounds
-            ):
-                yield str(row[0])
+            ) as cursor:
+                async for row in cursor:
+                    yield str(row[0])
 
     @override
     async def list_dir(self, prefix: str) -> AsyncIterator[str]:
@@ -591,29 +596,35 @@ class SQLiteStore(Store):
         self._check_writable()
         await self._ensure_open()
 
-        async with self._pool.acquire_write() as conn:
+        async with self._transaction():
+            assert self._conn is not None
             # Check if key exists
-            row = await conn.fetchone(
+            async with self._conn.execute(
                 "SELECT v FROM zarr WHERE k = ?", (prefix.rstrip("/"),)
-            )
+            ) as cursor:
+                row = await cursor.fetchone()
             if row is not None:
                 raise ValueError(
                     f"Cannot delete directory {prefix} as it is a key in the store."
                 )
 
             if prefix == "":
-                await conn.execute("DELETE FROM zarr")
+                await self._conn.execute("DELETE FROM zarr")
             else:
                 bounds = self._get_text_boundaries(prefix)
-                await conn.execute("DELETE FROM zarr WHERE k > ? AND k < ?", bounds)
+                await self._conn.execute(
+                    "DELETE FROM zarr WHERE k > ? AND k < ?", bounds
+                )
 
     @override
     async def getsize(self, key: str) -> int:
         _validate_key(key)
         await self._ensure_open()
-        row = await self._pool.fetchone(
+        assert self._conn is not None
+        async with self._conn.execute(
             "SELECT LENGTH(v) FROM zarr WHERE k = ?", (key,)
-        )
+        ) as cursor:
+            row = await cursor.fetchone()
         if row is None:
             raise FileNotFoundError(key)
         return int(row[0])
@@ -621,13 +632,18 @@ class SQLiteStore(Store):
     @override
     async def getsize_prefix(self, prefix: str) -> int:
         await self._ensure_open()
+        assert self._conn is not None
         if prefix == "":
-            size_row = await self._pool.fetchone("SELECT SUM(LENGTH(v)) FROM zarr")
+            async with self._conn.execute(
+                "SELECT SUM(LENGTH(v)) FROM zarr"
+            ) as cursor:
+                size_row = await cursor.fetchone()
         else:
             bounds = self._get_text_boundaries(prefix)
-            size_row = await self._pool.fetchone(
+            async with self._conn.execute(
                 "SELECT SUM(LENGTH(v)) FROM zarr WHERE k > ? AND k < ?", bounds
-            )
+            ) as cursor:
+                size_row = await cursor.fetchone()
         if size_row is None or size_row[0] is None:
             return 0
         return int(size_row[0])

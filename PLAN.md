@@ -77,12 +77,15 @@ and per-operation connection management.
       autocommit=False,
   )
   ```
+- **Journal mode handling** (user's modification): Before opening the final
+  `autocommit=False` connection, if journal mode needs to be changed, open a
+  temporary connection with `autocommit=True`, set `PRAGMA journal_mode`, close
+  it, then open the final connection with `autocommit=False`. This avoids
+  having to close and reopen the final connection.
 - Remove the `if not self._pool.is_open` check (no pool to reuse).
-- **Journal mode handling**: Since `autocommit=False` prevents changing
-  `PRAGMA journal_mode` within a transaction, `_open()` opens a temporary
-  aiosqlite connection with `isolation_level=None` (autocommit mode), sets
-  the journal mode, closes it, then reopens the final connection with
-  `autocommit=False`.
+- Call `_create_schema()` within `async with self._transaction():` (which
+  commits on success, rolls back on error).
+- Call `_validate_schema()` using `self._conn` directly.
 - Added `_transaction_lock: asyncio.Lock` attribute and initialization in `__init__`.
 - Added `_transaction()` async context manager: acquires `_transaction_lock`,
   yields, commits on success (in `try` block — commit can fail), rolls back on error.
@@ -116,51 +119,38 @@ and per-operation connection management.
 - No helper methods. Reads use `self._conn.execute()` directly.
 - Writes use `async with self._transaction():` context manager.
 
-#### 2.11 `is_empty()`
-- Use `self._conn.execute()` directly for reads.
+#### 2.11 `is_empty()`  ✅ DONE
+- Uses `self._conn.execute()` directly for reads (no helper).
 
-#### 2.12 `clear()`
-- Replace `async with self._pool.acquire_write() as conn:` with
-  `async with self._transaction():` for writes.
+#### 2.12 `clear()`  ✅ DONE
+- Uses `async with self._transaction():` for writes.
+- Uses `self._conn.execute()` directly inside the transaction.
 
-#### 2.13 `_get_partial_blob()`
-- **Key change**: aiosqlite does not support the SQLite blob API
-  (`conn.blobopen`). Instead, read the full blob value via
-  `SELECT v FROM zarr WHERE k = ?` and apply the byte range as a Python slice.
-- Logic:
-  1. Fetch the row via `self._conn.execute("SELECT v FROM zarr WHERE k = ?", (key,))`.
-  2. If `row is None`, return `None`.
-  3. If `not isinstance(row[0], bytes)`, return `None` (handles non-bytes values).
-  4. `data = row[0]`, `blob_len = len(data)`.
-  5. Apply byte range as slice:
-     - `OffsetByteRequest(offset=o)`: `data[min(o, blob_len):]`
-     - `RangeByteRequest(start=s, end=e)`: `data[max(0, s):min(blob_len, max(0, e))]`
-       (clamp `e` to 0 when negative, matching original behavior)
-     - `SuffixByteRequest(suffix=s)`: `data[max(0, blob_len - s):]`
-     - Unknown type: raise `ValueError`.
-  6. Empty slices naturally return `b""` (no special-casing needed).
+#### 2.13 `_get_partial_blob()` — REMOVED  ✅ DONE
+- No longer needed. Byte-range slicing is inlined into `get()`.
 
-#### 2.14 `get()`
-- Use `self._conn.execute()` directly for the full-blob case.
-- `_get_partial_blob` handles the byte-range case.
+#### 2.14 `get()`  ✅ DONE
+- Fetch full blob via `self._conn.execute()` with cursor context manager.
+- For `byte_range is not None`, apply Python slice directly on the fetched bytes.
+- For `byte_range is None`, return the full blob.
 
-#### 2.15 `get_partial_values()`
+#### 2.15 `get_partial_values()`  ✅ DONE
 - No change needed (uses `asyncio.gather` with `self.get`).
 
-#### 2.16 `exists()`
+#### 2.16 `exists()`  ✅ DONE
 - Use `self._conn.execute()` directly for reads.
 
-#### 2.17 `set()` / `set_if_not_exists()` / `delete()`
+#### 2.17 `set()` / `set_if_not_exists()` / `delete()`  ✅ DONE
 - Use `async with self._transaction():` for writes.
 
-#### 2.18 `list()` / `list_prefix()`
+#### 2.18 `list()` / `list_prefix()`  ✅ DONE
 - Use `self._conn.execute()` directly with cursor iteration for reads.
 
-#### 2.19 `delete_dir()`
-- Replace `async with self._pool.acquire_write() as conn:` with
+#### 2.19 `delete_dir()`  ✅ DONE
+- Replaced `async with self._pool.acquire_write() as conn:` with
   `async with self._transaction():` for writes.
 
-#### 2.20 `getsize()` / `getsize_prefix()`
+#### 2.20 `getsize()` / `getsize_prefix()`  ✅ DONE
 - Use `self._conn.execute()` directly for reads.
 
 ### 3. `src/zarr_sqlite/__init__.py`
