@@ -1,12 +1,14 @@
-import urllib
 from typing import override, Self
-from collections.abc import Iterable, AsyncIterator
+from collections.abc import Iterable, AsyncIterator, AsyncGenerator
+from contextlib import asynccontextmanager
 import datetime
 import sqlite3
 import warnings
 from pathlib import Path
 import urllib.parse
 import asyncio
+
+import aiosqlite
 
 from zarr.core.buffer import BufferPrototype, Buffer
 
@@ -19,7 +21,6 @@ from zarr.abc.store import (
 )
 
 from ._version import __version__
-from ._pool import AsyncConnectionPool, PooledConnection
 from ._db_utils import is_database_uri, is_in_memory_database
 
 if sqlite3.threadsafety != 3:
@@ -77,10 +78,10 @@ class SQLiteStore(Store):
     _database: str
     _is_open: bool
     _open_lock: asyncio.Lock
-    _pool: AsyncConnectionPool
+    _conn: aiosqlite.Connection | None
+    _transaction_lock: asyncio.Lock
     _journal_mode: str | None
     _page_size: int
-    _max_connections: int
 
     @property
     @override
@@ -104,19 +105,15 @@ class SQLiteStore(Store):
         read_only: bool = False,
         journal_mode: str | None = "WAL",
         page_size: int = 4096,
-        max_connections=10,
     ) -> None:
         super().__init__(read_only=read_only)
         self._database = str(database)
         self._journal_mode = journal_mode
         self._page_size = page_size
-        self._max_connections = max_connections
-
-        self._pool = AsyncConnectionPool(
-            self.database, read_only=read_only, max_connections=self._max_connections
-        )
+        self._conn = None
 
         self._open_lock = asyncio.Lock()
+        self._transaction_lock = asyncio.Lock()
 
         if self.is_in_memory() and read_only:
             raise ValueError("In-memory databases cannot be opened read-only")
@@ -176,20 +173,51 @@ class SQLiteStore(Store):
                 return
             await self._open()
 
+    @asynccontextmanager
+    async def _transaction(self) -> AsyncGenerator[None, None]:
+        """Context manager for write transactions.
+
+        Acquires the transaction lock to serialize write operations on the
+        single aiosqlite connection. Commits on success, rolls back on error.
+        """
+        assert self._conn is not None
+        async with self._transaction_lock:
+            try:
+                yield
+                await self._conn.commit()
+            except BaseException:
+                await self._conn.rollback()
+                raise
+
     @override
     async def _open(self) -> None:
         if self._is_open:
             raise ValueError("store is already open")
 
-        # Connection pool cannot be reused, if it was closed, we need to create
-        # a new one.
-        if not self._pool.is_open:
-            self._pool = AsyncConnectionPool(self.database, read_only=self._read_only, max_connections=self._max_connections)
+        if not self.read_only and self._journal_mode is not None:
+            # PRAGMA journal_mode cannot be changed within a transaction,
+            # and aiosqlite with autocommit=False keeps a transaction open.
+            # Open a temporary connection in autocommit mode to set it.
+            if self._journal_mode not in {"DELETE", "WAL"}:
+                raise ValueError(f"Invalid journal_mode: {self._journal_mode}")
+            tmp_conn = await aiosqlite.connect(
+                self._database,
+                uri=is_database_uri(self._database),
+                autocommit=True
+            )
+            await tmp_conn.execute("PRAGMA journal_mode=" + self._journal_mode)
+            await tmp_conn.close()
 
+        self._conn = await aiosqlite.connect(
+            self._database,
+            uri=is_database_uri(self._database),
+            autocommit=False,
+        )
+
+        # Create schema only on empty file to avoid clobbering an existing file.
         if not self._read_only and await self._db_is_empty():
-            # Create schema only on empty file to avoid clobbering an existing file.
-            async with self._pool.acquire_write() as conn:
-                await self._create_schema(conn)
+            async with self._transaction():
+                await self._create_schema()
 
         await self._validate_schema()
 
@@ -201,34 +229,27 @@ class SQLiteStore(Store):
             raise ValueError("Cannot create a read-only view of an in-memory database.")
         return type(self)(self.database, read_only=read_only)
 
-    async def _create_schema(self, conn: PooledConnection) -> None:
-        if self._journal_mode is not None:
-            if self._journal_mode not in {"DELETE", "WAL"}:
-                raise ValueError(f"Invalid journal_mode: {self._journal_mode}")
-
-            # Changing journal mode to WAL might fail if we have more than
-            # 1 connection to the db.
-            assert self._pool.num_connections <= 1
-
-            try:
-                conn.autocommit = True
-                await conn.execute("PRAGMA journal_mode=" + self._journal_mode)
-            finally:
-                conn.autocommit = False
-
-        await conn.execute("PRAGMA page_size=" + str(int(self._page_size)))
-        await conn.execute(
+    async def _create_schema(self) -> None:
+        assert self._conn is not None
+        async with self._conn.execute(
+            "PRAGMA page_size=" + str(int(self._page_size))
+        ):
+            pass
+        async with self._conn.execute(
             "CREATE TABLE IF NOT EXISTS sqlitestore_metadata("
             "k TEXT PRIMARY KEY NOT NULL, v TEXT NOT NULL)"
-        )
-        await conn.execute(
+        ):
+            pass
+        async with self._conn.execute(
             "CREATE TABLE IF NOT EXISTS zarr("
             "k TEXT PRIMARY KEY NOT NULL, v BLOB NOT NULL)"
-        )
-        await conn.execute(
+        ):
+            pass
+        async with self._conn.execute(
             "PRAGMA application_id = " + str(_SQLITESTORE_APPLICATION_ID)
-        )
-        await conn.executemany(
+        ):
+            pass
+        async with self._conn.executemany(
             "INSERT OR IGNORE INTO sqlitestore_metadata(k, v) VALUES (?, ?)",
             [
                 ("sqlitestore_version", _SQLITESTORE_SPEC_VERSION),
@@ -236,19 +257,23 @@ class SQLiteStore(Store):
                 ("incompatible_flags", ""),
                 ("created_by", _CREATED_BY),
             ],
-        )
-        await self._update_timestamp(conn)
+        ):
+            pass
+        await self._update_timestamp()
 
-    async def _update_timestamp(self, conn: PooledConnection):
+    async def _update_timestamp(self) -> None:
+        assert self._conn is not None
         now = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
-        await conn.execute(
+        async with self._conn.execute(
             "INSERT INTO sqlitestore_metadata(k, v) VALUES (?, ?) "
             "ON CONFLICT(k) DO UPDATE SET v = excluded.v",
             ("created_time", now),
-        )
+        ):
+            pass
 
     async def _db_is_empty(self) -> bool:
-        row = await self._pool.fetchone(
+        assert self._conn is not None
+        async with self._conn.execute(
             """
             SELECT EXISTS (
                 SELECT 1
@@ -257,7 +282,8 @@ class SQLiteStore(Store):
                 AND name NOT LIKE 'sqlite_%'
             )
             """
-        )
+        ) as cursor:
+            row = await cursor.fetchone()
         assert row is not None
         return row[0] == 0
 
@@ -268,22 +294,27 @@ class SQLiteStore(Store):
             "incompatible_flags",
         )
 
-        async with self._pool.acquire() as conn:
-            for required_table in ("zarr", "sqlitestore_metadata"):
-                rows = await conn.fetchall("PRAGMA table_info(" + required_table + ")")
-                if not rows:
-                    raise ValueError(
-                        f"Invalid SQLiteStore file: missing required table '{required_table}'"
-                    )
+        assert self._conn is not None
+        for required_table in ("zarr", "sqlitestore_metadata"):
+            async with self._conn.execute(
+                "PRAGMA table_info(" + required_table + ")"
+            ) as cursor:
+                rows = await cursor.fetchall()
+            if not rows:
+                raise ValueError(
+                    f"Invalid SQLiteStore file: missing required table '{required_table}'"
+                )
 
-            app_id_row = await conn.fetchone("PRAGMA application_id")
-            assert app_id_row is not None
-            app_id = app_id_row[0]
+        async with self._conn.execute("PRAGMA application_id") as cursor:
+            app_id_row = await cursor.fetchone()
+        assert app_id_row is not None
+        app_id = app_id_row[0]
 
-            metadata_rows = await conn.fetchall(
-                "SELECT k, v FROM sqlitestore_metadata WHERE k IN (?, ?, ?)",
-                metadata_keys,
-            )
+        async with self._conn.execute(
+            "SELECT k, v FROM sqlitestore_metadata WHERE k IN (?, ?, ?)",
+            metadata_keys,
+        ) as cursor:
+            metadata_rows = await cursor.fetchall()
 
         if app_id != _SQLITESTORE_APPLICATION_ID:
             if self.read_only:
@@ -329,19 +360,23 @@ class SQLiteStore(Store):
 
     @override
     def close(self) -> None:
-        """Immediately close the store and all SQLite connections.
+        """Immediately close the store and the SQLite connection.
 
-        Calling close() closes all SQLite connections immediately. SQLite will
-        perform its normal connection cleanup, including rolling back
-        uncommitted transactions and performing the normal WAL close-time
-        checkpoint behavior when the last connection closes. Any in-flight
-        operations using those connections may fail and callers must ensure that
-        all operations have completed before closing the store.
+        Calling close() shuts down the aiosqlite connection via its synchronous
+        ``stop()`` method, which closes the underlying SQLite connection and
+        stops the background thread. SQLite will perform its normal connection
+        cleanup, including rolling back uncommitted transactions and performing
+        the normal WAL close-time checkpoint behavior when the last connection
+        closes. Any in-flight operations using the connection may fail and
+        callers must ensure that all operations have completed before closing
+        the store.
         """
         if not self._is_open:
             return
         self._is_open = False
-        self._pool.close()
+        if self._conn is not None:
+            self._conn.stop()
+            self._conn = None
 
     @staticmethod
     def _get_text_boundaries(prefix: str) -> tuple[str, str]:
