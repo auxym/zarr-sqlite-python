@@ -187,7 +187,6 @@ def test_store_close_cleans_up_wal_files(tempstore):
     assert not os.path.exists(tempstore.database + "-shm")
 
     # Open a raw sqlite3 connection and verify WAL is clean
-    con = sqlite3.connect(tempstore.database)
-    result = con.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchone()
-    assert result == (0, 0, 0)
-    con.close()
+    with sqlite3.connect(tempstore.database) as con:
+        result = con.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchone()
+        assert result == (0, 0, 0)

@@ -96,10 +96,8 @@ async def test_get_suffix_larger_than_length(memstore):
 @pytest.mark.asyncio
 async def test_get_non_bytes(tempstore):
     await tempstore.set("dummy", make_buffer(b"data"))
-    con = sqlite3.connect(tempstore.database, uri=True)
-    con.execute("INSERT INTO zarr (k, v) VALUES (?, ?)", ("k", 5))
-    con.commit()
-    con.close()
+    with sqlite3.connect(tempstore.database, autocommit=True) as con:
+        con.execute("INSERT INTO zarr (k, v) VALUES (?, ?)", ("k", 5))
     assert await tempstore.get("k", default_buffer_prototype()) is None
 
 
