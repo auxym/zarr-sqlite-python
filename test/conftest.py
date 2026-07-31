@@ -38,7 +38,7 @@ def get_as_bytes():
 
 
 @pytest.fixture
-def store():
+def memstore():
     """An in-memory SQLiteStore."""
     s = SQLiteStore(":memory:")
     yield s
@@ -46,7 +46,7 @@ def store():
 
 
 @pytest.fixture
-def tmpfile_store():
+def tempstore():
     """A file-backed SQLiteStore using a temporary file."""
     fp = NamedTemporaryFile(suffix=".db", delete=False)
     fp.close()
