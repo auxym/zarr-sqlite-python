@@ -216,6 +216,16 @@ class Connection:
             parameters = []
         await self._execute(self._conn.execute, sql, parameters)
 
+    async def set_autocommit(self, value: bool) -> None:
+        """Set the autocommit mode of the underlying sqlite3 connection.
+
+        When ``value`` is ``True``, each SQL statement is committed
+        immediately (autocommit mode).  This is required for PRAGMA
+        statements that cannot be executed within a transaction, such
+        as ``PRAGMA journal_mode``.
+        """
+        await self._execute(setattr, self._conn, "autocommit", value)
+
     async def executemany(self, sql: str, parameters: Iterable[Any]) -> None:
         """Execute a SQL statement many times."""
         await self._execute(self._conn.executemany, sql, parameters)

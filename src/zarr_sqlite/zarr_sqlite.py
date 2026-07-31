@@ -1,7 +1,7 @@
 from typing import override, Self, Sequence
 from collections.abc import Iterable, AsyncIterator, AsyncGenerator
 from contextlib import asynccontextmanager
-import datetime
+from datetime import datetime, timezone
 import sqlite3
 import warnings
 from pathlib import Path
@@ -188,21 +188,6 @@ class SQLiteStore(Store):
         if self._is_open:
             raise ValueError("store is already open")
 
-        if not self.read_only and self._journal_mode is not None:
-            # PRAGMA journal_mode cannot be changed within a transaction.  We
-            # need to set autocommit=True but our connection does not support
-            # changing autocommit on an open connection.  Open a temporary
-            # connection with autocommit=True mode to set journal_mode.
-            if self._journal_mode not in {"DELETE", "WAL"}:
-                raise ValueError(f"Invalid journal_mode: {self._journal_mode}")
-            tmp_conn = await connect(
-                self._database, uri=is_database_uri(self._database), autocommit=True
-            )
-            try:
-                await tmp_conn.execute("PRAGMA journal_mode=" + self._journal_mode)
-            finally:
-                await tmp_conn.close()
-
         self._conn = await connect(
             self._database,
             uri=is_database_uri(self._database),
@@ -210,14 +195,17 @@ class SQLiteStore(Store):
         )
 
         try:
+            if not self.read_only and self._journal_mode is not None:
+                await self._set_journal_mode()
+
             # Create schema only on empty file to avoid clobbering an existing file.
             if not self._read_only and await self._db_is_empty():
                 async with self._transaction():
                     await self._create_schema()
+                    await self._update_timestamp()
 
             await self._validate_schema()
         except Exception:
-            # Clean-up otherwise the worker thread hangs
             self._conn.stop(join=True)
             self._conn = None
             raise
@@ -255,9 +243,30 @@ class SQLiteStore(Store):
         )
         await self._update_timestamp()
 
+    async def _set_journal_mode(self):
+        assert self._conn is not None
+        if self._journal_mode is None:
+            return
+        elif self._journal_mode.upper() not in {"DELETE", "WAL"}:
+            raise ValueError(f"Invalid journal_mode: {self._journal_mode}")
+
+        # PRAGMA journal_mode cannot be changed within a transaction.
+        # Temporarily set autocommit=True to execute it outside a
+        # transaction, then restore the previous value.
+        await self._conn.set_autocommit(True)
+        try:
+            await self._conn.execute("PRAGMA journal_mode=" + self._journal_mode)
+        finally:
+            await self._conn.set_autocommit(False)
+
     async def _update_timestamp(self) -> None:
         assert self._conn is not None
-        now = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+
+        now = datetime.now(timezone.utc).isoformat().upper()
+        if now.endswith("+00:00"):
+            now = now.removesuffix("+00:00") + "Z"
+        assert now.endswith("Z")
+
         await self._conn.execute(
             "INSERT INTO sqlitestore_metadata(k, v) VALUES (?, ?) "
             "ON CONFLICT(k) DO UPDATE SET v = excluded.v",
