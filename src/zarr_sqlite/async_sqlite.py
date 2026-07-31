@@ -36,7 +36,7 @@ dedicated thread and results are returned as raw ``sqlite3`` objects.
 import asyncio
 import logging
 import sqlite3
-from collections.abc import Generator, Iterable
+from collections.abc import AsyncIterator, Generator, Iterable
 from functools import partial
 from pathlib import Path
 from queue import SimpleQueue
@@ -48,7 +48,10 @@ __all__ = ["connect", "Connection"]
 
 LOG = logging.getLogger("zarr_sqlite")
 
-_STOP_RUNNING_SENTINEL = object()
+class _Stop():
+    pass
+
+_STOP_RUNNING_SENTINEL = _Stop()
 _TxQueue = SimpleQueue[tuple[Optional[asyncio.Future], Callable[[], Any]]]
 
 
@@ -123,7 +126,7 @@ class Connection:
         # sqlite3 connection be finalized by its own __del__.
         self.stop()
 
-    def stop(self) -> Optional[asyncio.Future]:
+    def stop(self, join=False) -> None:
         """Stop the background thread. Prefer `async with` or `await close()`"""
         self._running = False
 
@@ -139,7 +142,9 @@ class Connection:
             future = None
 
         self._tx.put_nowait((future, close_and_stop))
-        return future
+        if join:
+            self._thread.join()
+        
 
     @property
     def _conn(self) -> sqlite3.Connection:
@@ -206,7 +211,7 @@ class Connection:
     async def execute(
         self, sql: str, parameters: Iterable[Any] | None = None
     ) -> None:
-        """Execute a SQL statement, returning the resulting cursor."""
+        """Execute a SQL statement."""
         if parameters is None:
             parameters = []
         await self._execute(self._conn.execute, sql, parameters)
@@ -214,8 +219,70 @@ class Connection:
     async def executemany(
         self, sql: str, parameters: Iterable[Any]
     ) -> None:
-        """Execute a SQL statement many times, returning the resulting cursor."""
+        """Execute a SQL statement many times."""
         await self._execute(self._conn.executemany, sql, parameters)
+
+    async def fetchall(
+        self, sql: str, parameters: Iterable[Any] | None = None
+    ) -> list[tuple[Any, ...]]:
+        """Execute a SQL query and return all matching rows.
+
+        Both the cursor creation and ``fetchall`` happen on the
+        worker thread in a single queued operation.
+        """
+        if parameters is None:
+            parameters = []
+
+        def _fetchall():
+            cursor = self._conn.execute(sql, parameters)
+            return cursor.fetchall()
+
+        return await self._execute(_fetchall)
+
+    async def fetchone(
+        self, sql: str, parameters: Iterable[Any] | None = None
+    ) -> tuple[Any, ...] | None:
+        """Execute a SQL query and return the first matching row.
+
+        Returns ``None`` if no rows match.  Both the cursor creation
+        and ``fetchone`` happen on the worker thread in a single
+        queued operation.
+        """
+        if parameters is None:
+            parameters = []
+
+        def _fetchone():
+            cursor = self._conn.execute(sql, parameters)
+            return cursor.fetchone()
+
+        return await self._execute(_fetchone)
+
+
+    async def fetch_iter(
+        self, sql: str, parameters: Iterable[Any] | None = None
+    ) -> AsyncIterator[tuple[Any, ...]]:
+        """Asynchronously iterate over rows from a SQL query.
+
+        The cursor is created and all fetches happen on the worker
+        thread.  Rows are fetched in chunks of ``_fetch_chunk_size``
+        for efficiency, with individual rows yielded to the caller.
+        The cursor is closed when the iterator is exhausted or when
+        the caller breaks out of the loop.
+        """
+        if parameters is None:
+            parameters = []
+
+        _fetch_chunk_size: int = 20
+        cursor = await self._execute(self._conn.execute, sql, parameters)
+        try:
+            while True:
+                chunk = await self._execute(cursor.fetchmany, _fetch_chunk_size)
+                if not chunk:
+                    break
+                for row in chunk:
+                    yield row
+        finally:
+            await self._execute(cursor.close)
 
 
 def connect(
