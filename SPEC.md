@@ -131,7 +131,7 @@ Readers must ignore any record with a key that is not described here.
 | `compatible_flags`    | Yes | Comma-separated list of flag strings. Reserved for future extensions to the store format. |
 | `incompatible_flags`  | Yes | Comma-separated list of flag strings. Reserved for future extensions to the store format. |
 | `created_by`  | No | Arbitrary string describing the software that wrote the file. |
-| `created_time`  | No | Timestamp indicating when the file was most recently modified, formatted as a string that conforms to [RFC3339](https://datatracker.ietf.org/doc/html/rfc3339). |
+| `created_time`  | No | Timestamp indicating when the file was most recently modified in UTC, formatted as a string that conforms to [RFC3339](https://datatracker.ietf.org/doc/html/rfc3339), using an upper-case T to separate the date and time and an upper-case Z to represent the timezone e.g. `1999-12-31T23:59:59.999Z`. |
 
 Readers must reject files whose major version is unsupported, as specified by
 the `sqlitestore_version` metadata record. Readers should ignore minor versions
