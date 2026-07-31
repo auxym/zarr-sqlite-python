@@ -48,8 +48,10 @@ __all__ = ["connect", "Connection"]
 
 LOG = logging.getLogger("zarr_sqlite")
 
-class _Stop():
+
+class _Stop:
     pass
+
 
 _STOP_RUNNING_SENTINEL = _Stop()
 _TxQueue = SimpleQueue[tuple[Optional[asyncio.Future], Callable[[], Any]]]
@@ -126,7 +128,7 @@ class Connection:
         # sqlite3 connection be finalized by its own __del__.
         self.stop()
 
-    def stop(self, join=False) -> None:
+    def stop(self, join=False, join_timeout: float | None = None) -> Optional[asyncio.Future]:
         """Stop the background thread. Prefer `async with` or `await close()`"""
         self._running = False
 
@@ -143,8 +145,8 @@ class Connection:
 
         self._tx.put_nowait((future, close_and_stop))
         if join:
-            self._thread.join()
-        
+            self._thread.join(timeout=join_timeout)
+        return future
 
     @property
     def _conn(self) -> sqlite3.Connection:
@@ -204,21 +206,17 @@ class Connection:
             raise
         finally:
             self._connection = None
-            future = self.stop()
+            future = self.stop(join=False)
             if future:
                 await future
 
-    async def execute(
-        self, sql: str, parameters: Iterable[Any] | None = None
-    ) -> None:
+    async def execute(self, sql: str, parameters: Iterable[Any] | None = None) -> None:
         """Execute a SQL statement."""
         if parameters is None:
             parameters = []
         await self._execute(self._conn.execute, sql, parameters)
 
-    async def executemany(
-        self, sql: str, parameters: Iterable[Any]
-    ) -> None:
+    async def executemany(self, sql: str, parameters: Iterable[Any]) -> None:
         """Execute a SQL statement many times."""
         await self._execute(self._conn.executemany, sql, parameters)
 
@@ -256,7 +254,6 @@ class Connection:
             return cursor.fetchone()
 
         return await self._execute(_fetchone)
-
 
     async def fetch_iter(
         self, sql: str, parameters: Iterable[Any] | None = None

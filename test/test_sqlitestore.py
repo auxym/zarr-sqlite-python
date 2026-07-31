@@ -6,8 +6,6 @@ import pytest
 from zarr.core.buffer import default_buffer_prototype
 from zarr.abc.store import OffsetByteRequest, RangeByteRequest, SuffixByteRequest
 
-from zarr_sqlite import SQLiteStore
-
 
 # ---------------------------------------------------------------------------
 # Core get/set tests

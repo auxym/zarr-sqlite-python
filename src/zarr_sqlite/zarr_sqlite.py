@@ -8,7 +8,7 @@ from pathlib import Path
 import urllib.parse
 import asyncio
 
-import aiosqlite
+from .async_sqlite import Connection, connect
 
 from zarr.core.buffer import BufferPrototype, Buffer
 
@@ -72,7 +72,7 @@ class SQLiteStore(Store):
     _database: str
     _is_open: bool
     _open_lock: asyncio.Lock
-    _conn: aiosqlite.Connection | None
+    _conn: Connection | None
     _transaction_lock: asyncio.Lock
     _journal_mode: str | None
     _page_size: int
@@ -172,7 +172,7 @@ class SQLiteStore(Store):
         """Context manager for write transactions.
 
         Acquires the transaction lock to serialize write operations on the
-        single aiosqlite connection. Commits on success, rolls back on error.
+        single SQLite connection. Commits on success, rolls back on error.
         """
         assert self._conn is not None
         async with self._transaction_lock:
@@ -190,12 +190,12 @@ class SQLiteStore(Store):
 
         if not self.read_only and self._journal_mode is not None:
             # PRAGMA journal_mode cannot be changed within a transaction.  We
-            # need to set autocommit=True but aiosqlite does not support
+            # need to set autocommit=True but our connection
             # changing autocommit on an open connection.  Open a temporary
             # connection with autocommit=True mode to set journal_mode.
             if self._journal_mode not in {"DELETE", "WAL"}:
                 raise ValueError(f"Invalid journal_mode: {self._journal_mode}")
-            tmp_conn = await aiosqlite.connect(
+            tmp_conn = await connect(
                 self._database, uri=is_database_uri(self._database), autocommit=True
             )
             try:
@@ -203,7 +203,7 @@ class SQLiteStore(Store):
             finally:
                 await tmp_conn.close()
 
-        self._conn = await aiosqlite.connect(
+        self._conn = await connect(
             self._database,
             uri=is_database_uri(self._database),
             autocommit=False,
@@ -260,7 +260,7 @@ class SQLiteStore(Store):
 
     async def _db_is_empty(self) -> bool:
         assert self._conn is not None
-        async with self._conn.execute(
+        row = await self._conn.fetchone(
             """
             SELECT EXISTS (
                 SELECT 1 FROM sqlite_schema
@@ -268,8 +268,7 @@ class SQLiteStore(Store):
                 AND name NOT LIKE 'sqlite_%'
             )
             """
-        ) as cursor:
-            row = await cursor.fetchone()
+        )
         assert row is not None
         return row[0] == 0
 
@@ -282,17 +281,15 @@ class SQLiteStore(Store):
 
         assert self._conn is not None
         for required_table in ("zarr", "sqlitestore_metadata"):
-            async with self._conn.execute(
+            rows = await self._conn.fetchall(
                 "PRAGMA table_info(" + required_table + ")"
-            ) as cursor:
-                rows = await cursor.fetchall()
+            )
             if not rows:
                 raise ValueError(
                     f"Invalid SQLiteStore file: missing required table '{required_table}'"
                 )
 
-        async with self._conn.execute("PRAGMA application_id") as cursor:
-            app_id_row = await cursor.fetchone()
+        app_id_row = await self._conn.fetchone("PRAGMA application_id")
         assert app_id_row is not None
         app_id = app_id_row[0]
 
@@ -313,11 +310,10 @@ class SQLiteStore(Store):
                     f"(expected {_SQLITESTORE_APPLICATION_ID:#x})."
                 )
 
-        async with self._conn.execute(
+        metadata_rows = await self._conn.fetchall(
             "SELECT k, v FROM sqlitestore_metadata WHERE k IN (?, ?, ?)",
             metadata_keys,
-        ) as cursor:
-            metadata_rows = await cursor.fetchall()
+        )
 
         metadata: dict[str, str] = (
             {k: v for k, v in metadata_rows} if metadata_rows else {}
@@ -350,20 +346,17 @@ class SQLiteStore(Store):
     def close(self) -> None:
         """Immediately close the store and the SQLite connection.
 
-        Calling close() shuts down the aiosqlite connection via its synchronous
-        ``stop()`` method, which closes the underlying SQLite connection and
-        stops the background thread. SQLite will perform its normal connection
-        cleanup, including rolling back uncommitted transactions and performing
-        the normal WAL close-time checkpoint behavior when the last connection
-        closes. Any in-flight operations using the connection may fail and
-        callers must ensure that all operations have completed before closing
-        the store.
+        Calling close() shuts down the connection via its synchronous
+        ``stop(join=True)`` method, which closes the underlying SQLite
+        connection and joins the background thread.  Any in-flight
+        operations using the connection may fail and callers must ensure
+        that all operations have completed before closing the store.
         """
         if not self._is_open:
             return
         self._is_open = False
         if self._conn is not None:
-            self._conn.stop()
+            self._conn.stop(join=True, join_timeout=5.0)
             self._conn = None
 
     @staticmethod
@@ -408,8 +401,7 @@ class SQLiteStore(Store):
             params = self._get_text_boundaries(prefix)
             sql = "SELECT EXISTS(SELECT 1 FROM zarr WHERE k > ? AND k < ? LIMIT 1)"
 
-        async with self._conn.execute(sql, params) as cursor:
-            row = await cursor.fetchone()
+        row = await self._conn.fetchone(sql, params)
         return row is not None and row[0] == 0
 
     @override
@@ -452,10 +444,7 @@ class SQLiteStore(Store):
         await self._ensure_open()
         assert self._conn is not None
 
-        async with self._conn.execute(
-            "SELECT v FROM zarr WHERE k = ?", (key,)
-        ) as cursor:
-            row = await cursor.fetchone()
+        row = await self._conn.fetchone("SELECT v FROM zarr WHERE k = ?", (key,))
 
         if row is None:
             return None
@@ -464,7 +453,7 @@ class SQLiteStore(Store):
             return None
 
         if byte_range is not None:
-            # aiosqlite does not support the SQLite blob API, so we read the
+            # The connection does not expose the SQLite blob API, so we read the
             # full blob and apply the byte range as a Python slice.
             blob_len = len(data)
             match byte_range:
@@ -498,10 +487,7 @@ class SQLiteStore(Store):
         _validate_key(key)
         await self._ensure_open()
         assert self._conn is not None
-        async with self._conn.execute(
-            "SELECT v FROM zarr WHERE k = ?", (key,)
-        ) as cursor:
-            row = await cursor.fetchone()
+        row = await self._conn.fetchone("SELECT v FROM zarr WHERE k = ?", (key,))
         return row is not None
 
     @override
@@ -540,9 +526,8 @@ class SQLiteStore(Store):
     async def list(self) -> AsyncIterator[str]:
         await self._ensure_open()
         assert self._conn is not None
-        async with self._conn.execute("SELECT k FROM zarr") as cursor:
-            async for row in cursor:
-                yield str(row[0])
+        async for row in self._conn.fetch_iter("SELECT k FROM zarr"):
+            yield str(row[0])
 
     @override
     async def list_prefix(self, prefix: str) -> AsyncIterator[str]:
@@ -554,9 +539,8 @@ class SQLiteStore(Store):
         else:
             params = self._get_text_boundaries(prefix)
             sql = "SELECT k FROM zarr WHERE k > ? AND k < ?"
-        async with self._conn.execute(sql, params) as cursor:
-            async for row in cursor:
-                yield str(row[0])
+        async for row in self._conn.fetch_iter(sql, params):
+            yield str(row[0])
 
     @override
     async def list_dir(self, prefix: str) -> AsyncIterator[str]:
@@ -585,10 +569,9 @@ class SQLiteStore(Store):
         async with self._transaction():
             assert self._conn is not None
             # Check if key exists
-            async with self._conn.execute(
+            row = await self._conn.fetchone(
                 "SELECT v FROM zarr WHERE k = ?", (prefix.rstrip("/"),)
-            ) as cursor:
-                row = await cursor.fetchone()
+            )
             if row is not None:
                 raise ValueError(
                     f"Cannot delete directory {prefix} as it is a key in the store."
@@ -607,10 +590,9 @@ class SQLiteStore(Store):
         _validate_key(key)
         await self._ensure_open()
         assert self._conn is not None
-        async with self._conn.execute(
+        row = await self._conn.fetchone(
             "SELECT LENGTH(v) FROM zarr WHERE k = ?", (key,)
-        ) as cursor:
-            row = await cursor.fetchone()
+        )
         if row is None:
             raise FileNotFoundError(key)
         return int(row[0])
@@ -625,8 +607,7 @@ class SQLiteStore(Store):
         else:
             params = self._get_text_boundaries(prefix)
             sql = "SELECT SUM(LENGTH(v)) FROM zarr WHERE k > ? AND k < ?"
-        async with self._conn.execute(sql, params) as cursor:
-            size_row = await cursor.fetchone()
+        size_row = await self._conn.fetchone(sql, params)
         if size_row is None or size_row[0] is None:
             return 0
         return int(size_row[0])
