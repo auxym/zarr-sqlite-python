@@ -211,7 +211,8 @@ class SQLiteStore(Store):
 
         # Create schema only on empty file to avoid clobbering an existing file.
         if not self._read_only and await self._db_is_empty():
-            await self._create_schema()
+            async with self._transaction():
+                await self._create_schema()
 
         await self._validate_schema()
 
@@ -225,39 +226,37 @@ class SQLiteStore(Store):
 
     async def _create_schema(self) -> None:
         assert self._conn is not None
-        async with self._transaction():
-            await self._conn.execute("PRAGMA page_size=" + str(int(self._page_size)))
-            await self._conn.execute(
-                "CREATE TABLE IF NOT EXISTS sqlitestore_metadata("
-                "k TEXT PRIMARY KEY NOT NULL, v TEXT NOT NULL)"
-            )
-            await self._conn.execute(
-                "CREATE TABLE IF NOT EXISTS zarr("
-                "k TEXT PRIMARY KEY NOT NULL, v BLOB NOT NULL)"
-            )
-            await self._conn.execute(
-                "PRAGMA application_id = " + str(int(_SQLITESTORE_APPLICATION_ID))
-            )
-            await self._conn.executemany(
-                "INSERT OR IGNORE INTO sqlitestore_metadata(k, v) VALUES (?, ?)",
-                [
-                    ("sqlitestore_version", _SQLITESTORE_SPEC_VERSION),
-                    ("compatible_flags", ""),
-                    ("incompatible_flags", ""),
-                    ("created_by", _CREATED_BY),
-                ],
-            )
-            await self._update_timestamp()
+        await self._conn.execute("PRAGMA page_size=" + str(int(self._page_size)))
+        await self._conn.execute(
+            "CREATE TABLE IF NOT EXISTS sqlitestore_metadata("
+            "k TEXT PRIMARY KEY NOT NULL, v TEXT NOT NULL)"
+        )
+        await self._conn.execute(
+            "CREATE TABLE IF NOT EXISTS zarr("
+            "k TEXT PRIMARY KEY NOT NULL, v BLOB NOT NULL)"
+        )
+        await self._conn.execute(
+            "PRAGMA application_id = " + str(int(_SQLITESTORE_APPLICATION_ID))
+        )
+        await self._conn.executemany(
+            "INSERT OR IGNORE INTO sqlitestore_metadata(k, v) VALUES (?, ?)",
+            [
+                ("sqlitestore_version", _SQLITESTORE_SPEC_VERSION),
+                ("compatible_flags", ""),
+                ("incompatible_flags", ""),
+                ("created_by", _CREATED_BY),
+            ],
+        )
+        await self._update_timestamp()
 
     async def _update_timestamp(self) -> None:
         assert self._conn is not None
         now = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
-        async with self._transaction():
-            await self._conn.execute(
-                "INSERT INTO sqlitestore_metadata(k, v) VALUES (?, ?) "
-                "ON CONFLICT(k) DO UPDATE SET v = excluded.v",
-                ("created_time", now),
-            )
+        await self._conn.execute(
+            "INSERT INTO sqlitestore_metadata(k, v) VALUES (?, ?) "
+            "ON CONFLICT(k) DO UPDATE SET v = excluded.v",
+            ("created_time", now),
+        )
 
     async def _db_is_empty(self) -> bool:
         assert self._conn is not None
@@ -601,8 +600,7 @@ class SQLiteStore(Store):
             else:
                 params = self._get_text_boundaries(prefix)
                 sql = "DELETE FROM zarr WHERE k > ? AND k < ?"
-            async with self._transaction():
-                await self._conn.execute(sql, params)
+            await self._conn.execute(sql, params)
 
     @override
     async def getsize(self, key: str) -> int:
