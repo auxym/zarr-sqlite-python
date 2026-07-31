@@ -34,7 +34,7 @@ def test_benchmark_read_array(benchmark, benchmark_store_file):
     Measures only the array read time (``z[:]`` call), excluding store
     opening and array metadata loading.
     """
-    store = SQLiteStore(benchmark_store_file, read_only=True, max_connections=10)
+    store = SQLiteStore(benchmark_store_file, read_only=True)
     z = zarr.open(store=store, mode="r")
 
     def read_array():
