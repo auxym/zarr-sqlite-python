@@ -166,7 +166,7 @@ how the file is to be interpreted. The file format must be fully determined by
 the metadata records sqlitestore_version, compatible_flags, and
 incompatible_flags.
 
-Writers are not required to create or update the created_at field. Consequently,
+Writers are not required to create or update the modified_at field. Consequently,
 readers should not rely on its presence or accuracy.
 
 ### Table `zarr`
