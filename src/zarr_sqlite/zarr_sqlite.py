@@ -1,4 +1,4 @@
-from typing import override, Self
+from typing import override, Self, Sequence
 from collections.abc import Iterable, AsyncIterator, AsyncGenerator
 from contextlib import asynccontextmanager
 import datetime
@@ -407,9 +407,9 @@ class SQLiteStore(Store):
         await self._ensure_open()
         assert self._conn is not None
 
-        params = ()
+        params: Sequence[str] = ()
         if prefix == "":
-            sql = "SELECT EXISTS(SELECT 1 FROM zarr LIMIT 1)", ()
+            sql = "SELECT EXISTS(SELECT 1 FROM zarr LIMIT 1)"
         else:
             params = self._get_text_boundaries(prefix)
             sql = "SELECT EXISTS(SELECT 1 FROM zarr WHERE k > ? AND k < ? LIMIT 1)"
@@ -554,23 +554,21 @@ class SQLiteStore(Store):
     async def list_prefix(self, prefix: str) -> AsyncIterator[str]:
         await self._ensure_open()
         assert self._conn is not None
+        params: Sequence[str] = ()
         if prefix == "":
-            async with self._conn.execute("SELECT k FROM zarr") as cursor:
-                async for row in cursor:
-                    yield str(row[0])
+            sql = "SELECT k FROM zarr"
         else:
-            bounds = self._get_text_boundaries(prefix)
-            async with self._conn.execute(
-                "SELECT k FROM zarr WHERE k > ? AND k < ?", bounds
-            ) as cursor:
-                async for row in cursor:
-                    yield str(row[0])
+            params = self._get_text_boundaries(prefix)
+            sql = "SELECT k FROM zarr WHERE k > ? AND k < ?"
+        async with self._conn.execute(sql, params) as cursor:
+            async for row in cursor:
+                yield str(row[0])
 
     @override
     async def list_dir(self, prefix: str) -> AsyncIterator[str]:
+        # Even though prefix will be normalized in list_prefix(), this is
+        # required for the removeprefix(prefix) call used below.
         if prefix != "" and not prefix[-1] == "/":
-            # Even though prefix will be normalized in list_prefix(), this is
-            # required for the removeprefix(prefix) call used below.
             prefix += "/"
 
         # _ensure_open is called in list_prefix()
@@ -602,13 +600,14 @@ class SQLiteStore(Store):
                     f"Cannot delete directory {prefix} as it is a key in the store."
                 )
 
+            params: Sequence[str] = ()
             if prefix == "":
-                await self._conn.execute("DELETE FROM zarr")
+                sql = "DELETE FROM zarr"
             else:
-                bounds = self._get_text_boundaries(prefix)
-                await self._conn.execute(
-                    "DELETE FROM zarr WHERE k > ? AND k < ?", bounds
-                )
+                params = self._get_text_boundaries(prefix)
+                sql = "DELETE FROM zarr WHERE k > ? AND k < ?"
+            async with self._transaction():
+                await self._conn.execute(sql, params)
 
     @override
     async def getsize(self, key: str) -> int:
@@ -627,15 +626,14 @@ class SQLiteStore(Store):
     async def getsize_prefix(self, prefix: str) -> int:
         await self._ensure_open()
         assert self._conn is not None
+        params: Sequence[str] = ()
         if prefix == "":
-            async with self._conn.execute("SELECT SUM(LENGTH(v)) FROM zarr") as cursor:
-                size_row = await cursor.fetchone()
+            sql = "SELECT SUM(LENGTH(v)) FROM zarr"
         else:
-            bounds = self._get_text_boundaries(prefix)
-            async with self._conn.execute(
-                "SELECT SUM(LENGTH(v)) FROM zarr WHERE k > ? AND k < ?", bounds
-            ) as cursor:
-                size_row = await cursor.fetchone()
+            params = self._get_text_boundaries(prefix)
+            sql = "SELECT SUM(LENGTH(v)) FROM zarr WHERE k > ? AND k < ?"
+        async with self._conn.execute(sql, params) as cursor:
+            size_row = await cursor.fetchone()
         if size_row is None or size_row[0] is None:
             return 0
         return int(size_row[0])
