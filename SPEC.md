@@ -8,17 +8,22 @@ using the SQLite database engine.
 
 ## Notes about the design decisions
 
-SQLiteStore is designed primarily for sharing moderately sized datasets by storing an entire dataset in a single file.
-
-Although SQLite supports databases several terabytes in size, no file size limit is defined by this specification. However, SQLiteStore is intended for datasets up to approximately 10 GB.
+SQLiteStore is designed primarily for sharing moderately sized datasets by
+storing an entire dataset in a single file.
 
 SQLite was chosen to accomplish this goal for the following reasons:
 
 - SQLite has been in widespread use for a long time and is considered to be
   highly robust software.
-- Unlike many archive formats, SQLite natively supports Zarr store operations such as key deletion, overwriting values, and modifying stored values.
+- Unlike many archive formats, SQLite natively supports Zarr store operations
+  such as key deletion, overwriting values, and modifying stored values.
 - SQLite libraries are available for nearly all programming languages and
   computers.
+
+
+SQLite supports databases several terabytes in size and this specification
+does not define any file size limit. However, the design of SQLiteStore is
+intended for datasets up to approximately 10 GB.
   
 SQLiteStore was not designed to compete in read or write speed with other
 stores, such as *FileSystemStore*.
@@ -96,7 +101,7 @@ Implementations may satisfy this requirement by executing the following SQL
 statements:
 
 ```sql
-CREATE TABLE IF NOT EXISTS sqlitestore_metadata(
+CREATE TABLE IF NOT EXISTS zarr_sqlitestore_metadata(
   k TEXT PRIMARY KEY NOT NULL,
   v TEXT NOT NULL
 );
@@ -108,7 +113,7 @@ CREATE TABLE IF NOT EXISTS zarr(
 
 Readers must ignore all other tables present within the file.
 
-### Table `sqlitestore_metadata`
+### Table `zarr_sqlitestore_metadata`
 
 Schema:
 
@@ -117,12 +122,12 @@ Schema:
 | k | `TEXT` | Metadata key |
 | v | `TEXT` | Metadata value string |
 
-The `sqlitestore_metadata` table stores metadata that is useful for the
+The `zarr_sqlitestore_metadata` table stores metadata that is useful for the
 SQLiteStore implementation.
 
-The `sqlitestore_metadata` table must include records which are marked
+The `zarr_sqlitestore_metadata` table must include records which are marked
 *required* in the table below. Writers must not insert in the
-`sqlitestore_metadata` table any record with a key that is not described here.
+`zarr_sqlitestore_metadata` table any record with a key that is not described here.
 Readers must ignore any record with a key that is not described here.
 
 | Key | Required | Description of value |
@@ -131,7 +136,7 @@ Readers must ignore any record with a key that is not described here.
 | `compatible_flags`    | Yes | Comma-separated list of flag strings. Reserved for future extensions to the store format. |
 | `incompatible_flags`  | Yes | Comma-separated list of flag strings. Reserved for future extensions to the store format. |
 | `created_by`  | No | Arbitrary string describing the software that wrote the file. |
-| `created_time`  | No | Timestamp indicating when the file was most recently modified, formatted as a string that conforms to [RFC3339](https://datatracker.ietf.org/doc/html/rfc3339). |
+| `modified_at`  | No | Timestamp indicating when the file was most recently modified in UTC, formatted as a string that conforms to [RFC3339](https://datatracker.ietf.org/doc/html/rfc3339), using an upper-case T to separate the date and time and an upper-case Z to represent the timezone e.g. `1999-12-31T23:59:59.999Z`. |
 
 Readers must reject files whose major version is unsupported, as specified by
 the `sqlitestore_version` metadata record. Readers should ignore minor versions
@@ -161,6 +166,9 @@ how the file is to be interpreted. The file format must be fully determined by
 the metadata records sqlitestore_version, compatible_flags, and
 incompatible_flags.
 
+Writers are not required to create or update the modified_at field. Consequently,
+readers should not rely on its presence or accuracy.
+
 ### Table `zarr`
 
 Schema:
@@ -176,8 +184,7 @@ Keys are stored exactly as provided by the Zarr client, without modification.
 Per the *Abstract store interface* specification, keys are Unicode strings.
 Implementations must preserve the logical Unicode string regardless of the
 underlying SQLite database encoding. No Unicode normalization shall be
-performed. Implementations must preserve the key comparison semantics defined by
-the Zarr core specification.
+performed.
 
 Writers must insert only valid keys in the zarr table. Valid keys are
 those which respect the following rules:
@@ -187,6 +194,10 @@ those which respect the following rules:
 3. A key must not contain the substring `//`.
 
 The empty string is a valid key.
+
+Implementations must preserve the key comparison semantics defined by the Zarr
+core specification. In SQLite, this can be achieved by using the "BINARY"
+collating function for all key comparisons.
 
 Values are stored as binary blobs (SQLite type `BLOB`) exactly as provided by
 the Zarr client, without modification.

@@ -222,7 +222,7 @@ class SQLiteStore(Store):
         assert self._conn is not None
         await self._conn.execute("PRAGMA page_size=" + str(int(self._page_size)))
         await self._conn.execute(
-            "CREATE TABLE IF NOT EXISTS sqlitestore_metadata("
+            "CREATE TABLE IF NOT EXISTS zarr_sqlitestore_metadata("
             "k TEXT PRIMARY KEY NOT NULL, v TEXT NOT NULL)"
         )
         await self._conn.execute(
@@ -233,7 +233,7 @@ class SQLiteStore(Store):
             "PRAGMA application_id = " + str(int(_SQLITESTORE_APPLICATION_ID))
         )
         await self._conn.executemany(
-            "INSERT OR IGNORE INTO sqlitestore_metadata(k, v) VALUES (?, ?)",
+            "INSERT OR IGNORE INTO zarr_sqlitestore_metadata(k, v) VALUES (?, ?)",
             [
                 ("sqlitestore_version", _SQLITESTORE_SPEC_VERSION),
                 ("compatible_flags", ""),
@@ -268,9 +268,9 @@ class SQLiteStore(Store):
         assert now.endswith("Z")
 
         await self._conn.execute(
-            "INSERT INTO sqlitestore_metadata(k, v) VALUES (?, ?) "
+            "INSERT INTO zarr_sqlitestore_metadata(k, v) VALUES (?, ?) "
             "ON CONFLICT(k) DO UPDATE SET v = excluded.v",
-            ("created_time", now),
+            ("modified_at", now),
         )
 
     async def _db_is_empty(self) -> bool:
@@ -295,7 +295,7 @@ class SQLiteStore(Store):
         )
 
         assert self._conn is not None
-        for required_table in ("zarr", "sqlitestore_metadata"):
+        for required_table in ("zarr", "zarr_sqlitestore_metadata"):
             rows = await self._conn.fetchall(
                 "PRAGMA table_info(" + required_table + ")"
             )
@@ -326,7 +326,7 @@ class SQLiteStore(Store):
                 )
 
         metadata_rows = await self._conn.fetchall(
-            "SELECT k, v FROM sqlitestore_metadata WHERE k IN (?, ?, ?)",
+            "SELECT k, v FROM zarr_sqlitestore_metadata WHERE k IN (?, ?, ?)",
             metadata_keys,
         )
 

@@ -28,7 +28,7 @@ async def test_schema_tables_exist(tempstore):
         cur = con.execute("SELECT name FROM sqlite_master WHERE type='table'")
         tables = {row[0] for row in cur.fetchall()}
     assert "zarr" in tables
-    assert "sqlitestore_metadata" in tables
+    assert "zarr_sqlitestore_metadata" in tables
 
 
 @pytest.mark.asyncio
@@ -36,7 +36,7 @@ async def test_schema_not_null_constraints(tempstore):
     """Both k and v columns in both tables have NOT NULL."""
     await tempstore.set("key", make_buffer(b"data"))
     with sqlite3.connect(tempstore.database) as con:
-        for table in ("zarr", "sqlitestore_metadata"):
+        for table in ("zarr", "zarr_sqlitestore_metadata"):
             cur = con.execute(f"PRAGMA table_info({table})")
             for row in cur.fetchall():
                 assert row[3] == 1, (
@@ -58,13 +58,13 @@ async def test_metadata_required_records(tempstore):
     """All required metadata records exist with correct values."""
     await tempstore.set("key", make_buffer(b"data"))
     with sqlite3.connect(tempstore.database) as con:
-        cur = con.execute("SELECT k, v FROM sqlitestore_metadata")
+        cur = con.execute("SELECT k, v FROM zarr_sqlitestore_metadata")
         metadata = dict(cur.fetchall())
     assert metadata["sqlitestore_version"] == _SQLITESTORE_SPEC_VERSION
     assert metadata["compatible_flags"] == ""
     assert metadata["incompatible_flags"] == ""
     assert "created_by" in metadata
-    assert "created_time" in metadata
+    assert "modified_at" in metadata
 
 
 @pytest.mark.asyncio
@@ -72,27 +72,30 @@ async def test_metadata_created_by(tempstore):
     """created_by contains the package name."""
     await tempstore.set("key", make_buffer(b"data"))
     with sqlite3.connect(tempstore.database) as con:
-        cur = con.execute("SELECT v FROM sqlitestore_metadata WHERE k = 'created_by'")
+        cur = con.execute("SELECT v FROM zarr_sqlitestore_metadata WHERE k = 'created_by'")
         created_by = cur.fetchone()[0]
     assert created_by.startswith("zarr-sqlite-python")
 
 
 @pytest.mark.asyncio
-async def test_metadata_created_time(tempstore):
-    """created_time is a valid ISO 8601 timestamp within the last 5 minutes."""
-    TIMESTAMP_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$")
+async def test_metadata_modified_at(tempstore):
+    """modified_at is a spec-conforming timestamp within the last 5 minutes."""
+
     await tempstore.set("key", make_buffer(b"data"))
     with sqlite3.connect(tempstore.database) as con:
-        cur = con.execute("SELECT v FROM sqlitestore_metadata WHERE k = 'created_time'")
-        created_time = cur.fetchone()[0]
+        cur = con.execute("SELECT v FROM zarr_sqlitestore_metadata WHERE k = 'modified_at'")
+        modified_at = cur.fetchone()[0]
 
-    assert TIMESTAMP_PATTERN.match(created_time) is not None
+    # Timestamp must be a valid RFC-3339 date-time timestamp, must be in UTC time zone,
+    # must end in upper case "Z" and the date-time separator must be uppercase "T".
+    TIMESTAMP_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$")
+    assert TIMESTAMP_PATTERN.match(modified_at) is not None
 
-    created_time_parsed = datetime.datetime.fromisoformat(created_time)
-    assert created_time_parsed.tzinfo == datetime.timezone.utc
+    modified_at_parsed = datetime.datetime.fromisoformat(modified_at)
+    assert modified_at_parsed.tzinfo == datetime.timezone.utc
 
     now = datetime.datetime.now(datetime.timezone.utc)
-    assert now - datetime.timedelta(minutes=5) <= created_time_parsed <= now
+    assert now - datetime.timedelta(minutes=5) <= modified_at_parsed <= now
 
 # ---------------------------------------------------------------------------
 # Schema validation tests
@@ -115,16 +118,16 @@ async def test_validate_missing_zarr_table(tempstore):
 
 @pytest.mark.asyncio
 async def test_validate_missing_metadata_table(tempstore):
-    """Opening a file without sqlitestore_metadata should fail."""
+    """Opening a file without zarr_sqlitestore_metadata should fail."""
     await tempstore.set("key", make_buffer(b"data"))
     tempstore.close()
 
     with sqlite3.connect(tempstore.database, autocommit=True) as con:
-        con.execute("DROP TABLE sqlitestore_metadata")
+        con.execute("DROP TABLE zarr_sqlitestore_metadata")
 
     store = SQLiteStore(tempstore.database, read_only=True)
     with pytest.raises(
-        ValueError, match="missing required table 'sqlitestore_metadata'"
+        ValueError, match="missing required table 'zarr_sqlitestore_metadata'"
     ):
         await store.exists("key")
 
@@ -136,7 +139,7 @@ async def test_validate_missing_metadata_record(tempstore):
     tempstore.close()
 
     with sqlite3.connect(tempstore.database, autocommit=True) as con:
-        con.execute("DELETE FROM sqlitestore_metadata WHERE k = 'sqlitestore_version'")
+        con.execute("DELETE FROM zarr_sqlitestore_metadata WHERE k = 'sqlitestore_version'")
 
     store = SQLiteStore(tempstore.database, read_only=True)
     with pytest.raises(
@@ -153,7 +156,7 @@ async def test_validate_invalid_version(tempstore):
 
     with sqlite3.connect(tempstore.database, autocommit=True) as con:
         con.execute(
-            "UPDATE sqlitestore_metadata SET v = 'invalid' WHERE k = 'sqlitestore_version'"
+            "UPDATE zarr_sqlitestore_metadata SET v = 'invalid' WHERE k = 'sqlitestore_version'"
         )
 
     store = SQLiteStore(tempstore.database, read_only=True)
@@ -169,7 +172,7 @@ async def test_validate_unsupported_major_version(tempstore):
 
     with sqlite3.connect(tempstore.database, autocommit=True) as con:
         con.execute(
-            "UPDATE sqlitestore_metadata SET v = '2.0' WHERE k = 'sqlitestore_version'"
+            "UPDATE zarr_sqlitestore_metadata SET v = '2.0' WHERE k = 'sqlitestore_version'"
         )
 
     store = SQLiteStore(tempstore.database, read_only=True)
@@ -185,7 +188,7 @@ async def test_validate_unknown_incompatible_flag(tempstore):
 
     with sqlite3.connect(tempstore.database, autocommit=True) as con:
         con.execute(
-            "UPDATE sqlitestore_metadata SET v = 'unknown_flag' "
+            "UPDATE zarr_sqlitestore_metadata SET v = 'unknown_flag' "
             "WHERE k = 'incompatible_flags'"
         )
 
