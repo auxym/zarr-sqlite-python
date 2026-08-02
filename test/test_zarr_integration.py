@@ -1,43 +1,26 @@
 """Test integration with zarr library"""
 
 import os
-import tempfile
-from pathlib import Path
+import sqlite3
 import pytest
 import numpy as np
 import zarr
 from zarr_sqlite import SQLiteStore
 
 
-@pytest.fixture
-def temp_db_file():
-    tmp_db = tempfile.NamedTemporaryFile(
-        suffix=".db", delete=False, delete_on_close=False
-    )
-    tmp_db.close()
-    yield tmp_db.name
-    os.remove(tmp_db.name)
-
-
-@pytest.fixture
-def sqlite_store(temp_db_file):
-    store = SQLiteStore(temp_db_file)
-    yield store
-    store.close()
-
 
 def random_array(shape, dtype=np.float64):
     return np.random.default_rng().random(shape, dtype)
 
 
-def test_open_close(temp_db_file):
-    store = SQLiteStore.open(temp_db_file)
+def test_open_close(tempstore):
+    store = SQLiteStore.open(tempstore.database)
     store.close()
 
 
-def test_store_array(sqlite_store):
+def test_store_array(tempstore):
     z = zarr.create_array(
-        store=sqlite_store, shape=(100, 100), chunks=(10, 10), dtype="f4"
+        store=tempstore, shape=(100, 100), chunks=(10, 10), dtype="f4"
     )
     data = random_array((100, 100), dtype=np.float32)
     z[:, :] = data
@@ -45,8 +28,8 @@ def test_store_array(sqlite_store):
     assert np.array_equal(read_back, data)
 
 
-def test_create_group(sqlite_store):
-    root = zarr.create_group(store=sqlite_store)
+def test_create_group(tempstore):
+    root = zarr.create_group(store=tempstore)
     group1 = root.create_group("group1")
 
     assert isinstance(root, zarr.Group)
@@ -55,8 +38,8 @@ def test_create_group(sqlite_store):
     assert isinstance(root["group1"], zarr.Group)
 
 
-def test_save_array_to_group(temp_db_file):
-    with SQLiteStore(temp_db_file) as sqlite_store:
+def test_save_array_to_group(tempstore):
+    with SQLiteStore(tempstore.database) as sqlite_store:
         root = zarr.create_group(store=sqlite_store)
         group1 = root.create_group("group1")
         z = group1.create_array(shape=(100, 100), chunks=(10, 10), dtype="f4", name="z")
@@ -66,13 +49,13 @@ def test_save_array_to_group(temp_db_file):
 
     del root, group1, z, sqlite_store
 
-    with SQLiteStore(temp_db_file) as sqlite_store:
+    with SQLiteStore(tempstore.database) as sqlite_store:
         root = zarr.open_group(store=sqlite_store)
         assert np.array_equal(data, root["group1/z"][:])
 
 
-def test_delete_array(temp_db_file):
-    with SQLiteStore(temp_db_file) as sqlite_store:
+def test_delete_array(tempstore):
+    with SQLiteStore(tempstore.database) as sqlite_store:
         root = zarr.create_group(store=sqlite_store)
         group1 = root.create_group("group1")
         z = group1.create_array(shape=(100, 100), chunks=(10, 10), dtype="f4", name="z")
@@ -94,9 +77,9 @@ def test_delete_array(temp_db_file):
             root["group1/z"]
 
 
-def test_append_array(sqlite_store):
+def test_append_array(tempstore):
     z = zarr.create_array(
-        store=sqlite_store, shape=(100, 100), chunks=(10, 10), dtype="f4"
+        store=tempstore, shape=(100, 100), chunks=(10, 10), dtype="f4"
     )
     data = random_array((100, 100), dtype=np.float32)
     z[:, :] = data
@@ -108,8 +91,8 @@ def test_append_array(sqlite_store):
     assert np.array_equal(z[:], expected)
 
 
-def test_group_listing_methods(sqlite_store):
-    root = zarr.create_group(store=sqlite_store)
+def test_group_listing_methods(tempstore):
+    root = zarr.create_group(store=tempstore)
 
     a = root.create_group("a")
     a.create_array(shape=(10, 10), chunks=(10, 10), dtype="f4", name="array_a")
@@ -119,7 +102,7 @@ def test_group_listing_methods(sqlite_store):
     b = root.create_group("b")
     b.create_array(shape=(3, 3), chunks=(3, 3), dtype="f4", name="array_c")
 
-    root = zarr.open_group(store=sqlite_store)
+    root = zarr.open_group(store=tempstore)
 
     assert set(root.keys()) == {"a", "b"}
     assert set(root.array_keys()) == set()
@@ -152,31 +135,58 @@ def test_group_listing_methods(sqlite_store):
     assert set(root) == {"a", "b"}
 
 
-def test_store_array_creates_file_and_persists():
+def test_store_array_creates_file_and_persists(tmp_path):
     """Ensure file is created automatically when it doesn't exist"""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        fname = Path(tmpdir) / "test1.zarrdb"
-        store = SQLiteStore(fname, read_only=False)
-        root = zarr.open(store=store, mode="a")
-        group1 = root.create_group("group1")
+    fname = tmp_path / "test1.zarrdb"
+    assert not fname.exists()
+    store = SQLiteStore(fname, read_only=False)
+    root = zarr.open(store=store, mode="a")
+    group1 = root.create_group("group1")
 
-        i = np.arange(80000) / 60.0
-        x = i + np.random.normal(size=len(i), scale=1.5)
-        y = (
-            np.sin(x / 13)
-            + 0.7 * np.cos(x / 47)
-            + np.random.normal(size=len(i), scale=0.05)
-        )
-        x.shape = (400, 200)
-        y.shape = (200, 400)
+    i = np.arange(80000) / 60.0
+    x = i + np.random.normal(size=len(i), scale=1.5)
+    y = (
+        np.sin(x / 13)
+        + 0.7 * np.cos(x / 47)
+        + np.random.normal(size=len(i), scale=0.05)
+    )
+    x.shape = (400, 200)
+    y.shape = (200, 400)
 
-        group1.create_array(data=x, name="xdat")
-        group1.create_array(data=y, name="ydat")
-        store.close()
+    group1.create_array(data=x, name="xdat")
+    group1.create_array(data=y, name="ydat")
+    store.close()
 
-        read_root = zarr.open(store=SQLiteStore(fname, read_only=True), mode="r")
-        assert np.array_equal(read_root["group1/ydat"][:], y)
-        assert np.array_equal(read_root["group1/xdat"], x)
+    read_root = zarr.open(store=SQLiteStore(fname, read_only=True), mode="r")
+    assert np.array_equal(read_root["group1/ydat"][:], y)
+    assert np.array_equal(read_root["group1/xdat"], x)
 
-        # Ensure store is closed so tmpdir can be safely deleted
-        read_root.store.close()
+    read_root.store.close()
+
+
+def test_store_close_cleans_up_wal_files(tempstore):
+    """Closing the store should checkpoint the WAL and remove sidecar files."""
+    store = SQLiteStore(tempstore.database)
+    z = zarr.create_array(
+        store=store, shape=(100, 100), chunks=(10, 10), dtype="f4"
+    )
+    data = random_array((100, 100), dtype=np.float32)
+    z[:, :] = data
+    read_back = z[:]
+    assert np.array_equal(read_back, data)
+
+    # WAL and SHM files should exist while the store is open and has data
+    assert os.path.exists(tempstore.database + "-wal")
+    assert os.path.exists(tempstore.database + "-shm")
+
+    # Close the store - this should checkpoint the WAL
+    store.close()
+
+    # No -wal or -shm files should remain after close
+    assert not os.path.exists(tempstore.database + "-wal")
+    assert not os.path.exists(tempstore.database + "-shm")
+
+    # Open a raw sqlite3 connection and verify WAL is clean
+    with sqlite3.connect(tempstore.database) as con:
+        result = con.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchone()
+        assert result == (0, 0, 0)
