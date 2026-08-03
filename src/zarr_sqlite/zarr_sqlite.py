@@ -241,7 +241,6 @@ class SQLiteStore(Store):
                 ("created_by", _CREATED_BY),
             ],
         )
-        await self._update_timestamp()
 
     async def _set_journal_mode(self):
         assert self._conn is not None
@@ -412,13 +411,7 @@ class SQLiteStore(Store):
 
     @override
     async def clear(self) -> None:
-        """Clear the store."""
-        self._check_writable()
-        await self._ensure_open()
-        assert self._conn is not None
-        async with self._transaction():
-            await self._conn.execute("DROP TABLE IF EXISTS zarr")
-            await self._create_schema()
+        await self.delete_dir("")
 
     @override
     def __str__(self) -> str:
@@ -459,8 +452,6 @@ class SQLiteStore(Store):
             return None
 
         if byte_range is not None:
-            # The connection does not expose the SQLite blob API, so we read the
-            # full blob and apply the byte range as a Python slice.
             blob_len = len(data)
             match byte_range:
                 case OffsetByteRequest(offset=o):
@@ -504,7 +495,8 @@ class SQLiteStore(Store):
         assert self._conn is not None
         async with self._transaction():
             await self._conn.execute(
-                "INSERT OR REPLACE INTO zarr (k, v) VALUES (?, ?)",
+                "INSERT INTO zarr(k, v) VALUES (?, ?)"
+                "ON CONFLICT(k) DO UPDATE SET v = excluded.v",
                 (key, value.to_bytes()),
             )
 

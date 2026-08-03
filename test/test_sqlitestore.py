@@ -161,9 +161,8 @@ async def test_set_overwrites_preserves_rowid(tempstore):
             "SELECT rowid FROM zarr WHERE k = ?", ("k",)
         ).fetchone()[0]
 
-    await tempstore.set("k", make_buffer(b"second"))
+        await tempstore.set("k", make_buffer(b"second"))
 
-    with sqlite3.connect(tempstore.database) as con:
         rowid_after = con.execute(
             "SELECT rowid FROM zarr WHERE k = ?", ("k",)
         ).fetchone()[0]
