@@ -152,6 +152,28 @@ async def test_set_overwrites(memstore):
 
 
 @pytest.mark.asyncio
+async def test_set_overwrites_preserves_rowid(tempstore):
+    """Overwriting an existing key with set() should preserve the rowid."""
+    await tempstore.set("k", make_buffer(b"first"))
+
+    with sqlite3.connect(tempstore.database) as con:
+        rowid_before = con.execute(
+            "SELECT rowid FROM zarr WHERE k = ?", ("k",)
+        ).fetchone()[0]
+
+    await tempstore.set("k", make_buffer(b"second"))
+
+    with sqlite3.connect(tempstore.database) as con:
+        rowid_after = con.execute(
+            "SELECT rowid FROM zarr WHERE k = ?", ("k",)
+        ).fetchone()[0]
+
+    buf = await tempstore.get("k", default_buffer_prototype())
+    assert buf.to_bytes() == b"second"
+    assert rowid_before == rowid_after
+
+
+@pytest.mark.asyncio
 async def test_delete_erases_key(memstore):
     await memstore.set("k", make_buffer(b"data"))
     assert await memstore.exists("k")
