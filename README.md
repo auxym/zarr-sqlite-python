@@ -2,6 +2,13 @@
 
 Experimental implementation of a SQLite-based store for [zarr](https://zarr.dev/) v3, in python.
 
+SQLiteStore provides a single-file storage backend for Zarr. Key advantages over alternative single-file formats (e.g., ZipStore):
+
+  - Support for key deletion, overwriting, and partial value writes.
+  - Full ACID guarantees provided by SQLite.
+  - High availability of SQLite implementations across programming languages
+    and environments.
+
 Example usage:
 
 ```python
@@ -20,3 +27,9 @@ with SQLiteStore("my_zarr_file.sqlite") as store:
 `SQLiteStore` otherwise behaves identically to other stores used with zarr, see
 the [zarr user guide](https://zarr.readthedocs.io/en/stable/user-guide/storage.html)
 for more information.
+
+## Specification
+
+The store format is described in the document [SPEC.md](/SPEC.md). This document
+should allow the implementation of SQLiteStore for other programming languages
+or Zarr libraries.
