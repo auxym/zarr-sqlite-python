@@ -33,7 +33,12 @@ stores, such as *FileSystemStore*.
 The key words “MUST”, “MUST NOT”, “REQUIRED”, “SHALL”, “SHALL NOT”, “SHOULD”,
 “SHOULD NOT”, “RECOMMENDED”, “MAY”, and “OPTIONAL” in this document are to be
 interpreted as described in [IETF RFC
-2119](https://datatracker.ietf.org/doc/html/rfc2119).
+2119](https://datatracker.ietf.org/doc/html/rfc2119). However, for readability,
+these words do not appear in all uppercase letters in this specification.
+
+All of the text of this specification is normative except sections explicitly
+marked as non-normative, examples, and notes. Examples in this specification are
+introduced with the words “for example”.
 
 ## Definitions
 
@@ -210,11 +215,13 @@ The maximum size of a value that can be stored (for example, an array chunk) is
 limited to 2147483645 bytes (3 bytes less than 2 GiB) by current SQLite
 implementations.
 
-## Appendix: Example SQL queries (non-normative)
+## Appendix: Example SQL statements (non-normative)
 
-This appendix provides example SQL statements that implement the fundamental
-Zarr store operations described by the Zarr storage API. These examples are
-informative only and are intended to illustrate one possible implementation.
+This appendix provides example SQL statements that implement the operations
+defined by the *Zarr core specification abstract store interface*, as well
+as other operations which are specific to the metadata elements described in the
+current document.  These examples are informative only and are intended to
+illustrate one possible implementation.
 
 Implementations may use different SQL statements or SQLite APIs provided they
 exhibit equivalent externally observable behaviour.
@@ -224,8 +231,8 @@ In all examples below:
 - `:key`, `:value`, `:prefix`, and similar identifiers denote bound SQL
   parameters.
 - The `zarr` table is assumed to have the schema defined in this specification.
-- Implementations SHOULD use prepared statements rather than constructing SQL
-  strings dynamically.
+- Implementations should use parameter binding rather than constructing SQL
+  statements by interpolating values into SQL strings.
 
 Several operations in this appendix require selecting all keys that begin with a
 given prefix. Throughout this appendix, such operations assume the following
@@ -275,7 +282,9 @@ If no row is returned, the key does not exist.
 
 Retrieve one or more byte ranges from stored values.
 
-Implementations may use the SQLite incremental BLOB API (`sqlite3_blob_open()` and related functions) for efficient partial reads of large values. Alternatively, implementations may use SQL functions such as `substr()`.
+Implementations may use the SQLite incremental BLOB API (`sqlite3_blob_open()`
+and related functions) for efficient partial reads of large values.
+Alternatively, implementations may use SQL functions such as `substr()`.
 
 For example, a partial read using SQL may be performed as:
 
@@ -287,7 +296,8 @@ WHERE k = :key;
 
 where `offset` is zero-based and `length` is the number of bytes to retrieve.
 
-The Zarr API permits multiple key/range pairs to be requested simultaneously. Implementations may satisfy these requests individually.
+The Zarr API permits multiple key/range pairs to be requested simultaneously.
+Implementations may satisfy these requests individually.
 
 ### Write operations
 
@@ -308,9 +318,12 @@ DO UPDATE SET v = excluded.v;
 
 Modify one or more byte ranges within an existing value.
 
-Implementations may use the SQLite incremental BLOB API to update only the requested byte ranges without replacing the entire value.
+Implementations may use the SQLite incremental BLOB API to update only the
+requested byte ranges without replacing the entire value.
 
-If incremental BLOB access is not used, an implementation may instead read the existing value, modify the requested byte ranges in memory, and write the updated value using the `set` operation.
+If incremental BLOB access is not used, an implementation may instead read the
+existing value, modify the requested byte ranges in memory, and write the
+updated value using the `set` operation.
 
 ### Delete operations
 
@@ -334,7 +347,8 @@ DELETE FROM zarr
 WHERE k IN (...);
 ```
 
-Implementations should use a parameterized statement with one bound parameter for each key.
+Implementations should use a parameterized statement with one bound parameter
+for each key.
 
 ---
 
@@ -406,6 +420,7 @@ WHERE instr(rest, '/') > 0
 
 ORDER BY path;
 ```
+
 This query returns rows containing two TEXT columns: `type` and `path`. The
 `type` column indicates whether the value in `path` represents a stored key
 (`'key'`) or a child prefix (`'prefix'`).  Additionally, all returned prefixes

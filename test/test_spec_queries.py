@@ -59,26 +59,29 @@ def _list_dir_query(prefix: str) -> tuple[str, dict]:
 
     upper = prefix[:-1] + "0"
     sql = """
-        WITH matches AS (
-            SELECT
-                k,
-                substr(k, length(:prefix) + 1) AS rest
-            FROM zarr
-            WHERE k > :prefix
-              AND k < :upper
-        )
+    WITH matches AS (
         SELECT
-            'key' AS type,
-            k AS path
-        FROM matches
-        WHERE instr(rest, '/') = 0
-        UNION
-        SELECT DISTINCT
-            'prefix' AS type,
-            :prefix || substr(rest, 1, instr(rest, '/')) AS path
-        FROM matches
-        WHERE instr(rest, '/') > 0
-        ORDER BY path
+            k,
+            substr(k, length(:prefix) + 1) AS rest
+        FROM zarr
+        WHERE k > :prefix
+        AND k < :upper
+    )
+    SELECT
+        'key' AS type,
+        k AS path
+    FROM matches
+    WHERE instr(rest, '/') = 0
+
+    UNION
+
+    SELECT DISTINCT
+        'prefix' AS type,
+        :prefix || substr(rest, 1, instr(rest, '/')) AS path
+    FROM matches
+    WHERE instr(rest, '/') > 0
+
+    ORDER BY path;
     """
     return sql, {"prefix": prefix, "upper": upper}
 
