@@ -50,23 +50,38 @@ def _validate_key(key: str):
 
 
 class SQLiteStore(Store):
-    """
-    Store for the local file system.
+    """Single-file SQLite-backed store for Zarr v3 datasets.
+
+    Stores a complete Zarr hierarchy inside a single SQLite database file,
+    providing full ACID guarantees and support for key deletion, overwriting,
+    and partial value writes.
 
     Parameters
     ----------
     database : str or Path
-        Directory to use as root of store.
-    read_only : bool
-        Whether the store is read-only
+        Path to the SQLite database file (or ``:memory:`` for an in-memory
+        database).
+    read_only : bool, optional
+        Whether the store is read-only. In-memory databases cannot be opened
+        read-only.
+    journal_mode : str, optional
+        SQLite journaling mode. ``"WAL"`` (write-ahead log) or ``"DELETE"``
+        are supported. Use ``None`` to disable changing the journal mode.
+    page_size : int, optional
+        SQLite page size in bytes.
 
     Attributes
     ----------
-    supports_writes
-    supports_deletes
-    supports_partial_writes
-    supports_listing
-    root
+    database : str
+        The database path or URI.
+    supports_writes : bool
+        Whether the store supports write operations.
+    supports_deletes : bool
+        Whether the store supports delete operations.
+    supports_listing : bool
+        Whether the store supports listing operations.
+    read_only : bool
+        Whether the store is read-only.
     """
 
     _database: str
@@ -118,10 +133,12 @@ class SQLiteStore(Store):
             self._database = self._database_as_uri(self.database, read_only)
 
     @property
-    def database(self):
+    def database(self) -> str:
+        """The database path or URI as a string."""
         return self._database
 
     def is_in_memory(self) -> bool:
+        """Return whether the database is in-memory."""
         return is_in_memory_database(self._database)
 
     @staticmethod
@@ -214,6 +231,18 @@ class SQLiteStore(Store):
 
     @override
     def with_read_only(self, read_only: bool = False) -> Self:
+        """Return a copy of this store that is read-only or read-write.
+
+        Parameters
+        ----------
+        read_only : bool, optional
+            Whether the returned store is read-only.
+
+        Returns
+        -------
+        SQLiteStore
+            A new store instance with the same database path.
+        """
         if self.is_in_memory():
             raise ValueError("Cannot create a read-only view of an in-memory database.")
         return type(self)(self.database, read_only=read_only)
@@ -396,6 +425,19 @@ class SQLiteStore(Store):
 
     @override
     async def is_empty(self, prefix: str) -> bool:
+        """Check if the store is empty for a given prefix.
+
+        Parameters
+        ----------
+        prefix : str
+            The prefix of keys to check. An empty prefix checks whether
+            any keys exist at all.
+
+        Returns
+        -------
+        bool
+            ``True`` if no keys with the given prefix exist.
+        """
         await self._ensure_open()
         assert self._conn is not None
 
@@ -411,6 +453,7 @@ class SQLiteStore(Store):
 
     @override
     async def clear(self) -> None:
+        """Remove all keys and values from the store."""
         await self.delete_dir("")
 
     @override
@@ -439,6 +482,23 @@ class SQLiteStore(Store):
         prototype: BufferPrototype,
         byte_range: ByteRequest | None = None,
     ) -> Buffer | None:
+        """Retrieve the value associated with a key.
+
+        Parameters
+        ----------
+        key : str
+            The key to retrieve.
+        prototype : BufferPrototype
+            The prototype of the output buffer.
+        byte_range : ByteRequest, optional
+            Optional byte range to retrieve. If not given, the full value is
+            returned.
+
+        Returns
+        -------
+        Buffer or None
+            The value, or ``None`` if the key does not exist.
+        """
         _validate_key(key)
         await self._ensure_open()
         assert self._conn is not None
@@ -475,12 +535,39 @@ class SQLiteStore(Store):
         prototype: BufferPrototype,
         key_ranges: Iterable[tuple[str, ByteRequest | None]],
     ) -> list[Buffer | None]:
+        """Retrieve possibly partial values from given key/range pairs.
+
+        Parameters
+        ----------
+        prototype : BufferPrototype
+            The prototype of the output buffer.
+        key_ranges : Iterable[tuple[str, ByteRequest | None]]
+            Ordered set of key and optional byte-range pairs.
+
+        Returns
+        -------
+        list[Buffer | None]
+            A list with one entry per key/range pair, aligned with the
+            order of ``key_ranges``.
+        """
         return await asyncio.gather(
             *[self.get(key, prototype, byte_range) for key, byte_range in key_ranges]
         )
 
     @override
     async def exists(self, key: str) -> bool:
+        """Check if a key exists in the store.
+
+        Parameters
+        ----------
+        key : str
+            The key to check.
+
+        Returns
+        -------
+        bool
+            ``True`` if the key exists, ``False`` otherwise.
+        """
         _validate_key(key)
         await self._ensure_open()
         assert self._conn is not None
@@ -489,6 +576,17 @@ class SQLiteStore(Store):
 
     @override
     async def set(self, key: str, value: Buffer) -> None:
+        """Store a (key, value) pair.
+
+        If the key already exists, its value is replaced.
+
+        Parameters
+        ----------
+        key : str
+            The key to store under.
+        value : Buffer
+            The value to store.
+        """
         self._check_writable()
         _validate_key(key)
         await self._ensure_open()
@@ -502,6 +600,15 @@ class SQLiteStore(Store):
 
     @override
     async def set_if_not_exists(self, key: str, value: Buffer) -> None:
+        """Store a (key, value) pair only if the key does not already exist.
+
+        Parameters
+        ----------
+        key : str
+            The key to store under.
+        value : Buffer
+            The value to store.
+        """
         self._check_writable()
         _validate_key(key)
         await self._ensure_open()
@@ -514,6 +621,13 @@ class SQLiteStore(Store):
 
     @override
     async def delete(self, key: str) -> None:
+        """Remove a key from the store.
+
+        Parameters
+        ----------
+        key : str
+            The key to delete.
+        """
         self._check_writable()
         await self._ensure_open()
         assert self._conn is not None
@@ -522,6 +636,13 @@ class SQLiteStore(Store):
 
     @override
     async def list(self) -> AsyncIterator[str]:
+        """Retrieve all keys in the store.
+
+        Yields
+        ------
+        str
+            Each key in the store, in no particular order.
+        """
         await self._ensure_open()
         assert self._conn is not None
         async for row in self._conn.fetch_iter("SELECT k FROM zarr"):
@@ -529,6 +650,18 @@ class SQLiteStore(Store):
 
     @override
     async def list_prefix(self, prefix: str) -> AsyncIterator[str]:
+        """Retrieve all keys beginning with the given prefix.
+
+        Parameters
+        ----------
+        prefix : str
+            The prefix to match. An empty prefix returns all keys.
+
+        Yields
+        ------
+        str
+            Each key beginning with ``prefix``.
+        """
         await self._ensure_open()
         assert self._conn is not None
         params: Sequence[str] = ()
@@ -542,6 +675,19 @@ class SQLiteStore(Store):
 
     @override
     async def list_dir(self, prefix: str) -> AsyncIterator[str]:
+        """Retrieve all keys and immediate child prefixes with a given prefix.
+
+        Parameters
+        ----------
+        prefix : str
+            The prefix to match. An empty prefix returns immediate children
+            of the store root.
+
+        Yields
+        ------
+        str
+            Each immediate child key or prefix (the latter ending with ``/``).
+        """
         # Even though prefix will be normalized in list_prefix(), this is
         # required for the removeprefix(prefix) call used below.
         if prefix != "" and not prefix[-1] == "/":
@@ -561,6 +707,14 @@ class SQLiteStore(Store):
 
     @override
     async def delete_dir(self, prefix: str) -> None:
+        """Remove all keys beginning with the given prefix.
+
+        Parameters
+        ----------
+        prefix : str
+            The prefix of keys to delete. An empty prefix clears the entire
+            store.
+        """
         self._check_writable()
         await self._ensure_open()
 
@@ -585,6 +739,23 @@ class SQLiteStore(Store):
 
     @override
     async def getsize(self, key: str) -> int:
+        """Return the size in bytes of a stored value.
+
+        Parameters
+        ----------
+        key : str
+            The key to look up.
+
+        Returns
+        -------
+        int
+            The size of the value, in bytes.
+
+        Raises
+        ------
+        FileNotFoundError
+            If the key does not exist.
+        """
         _validate_key(key)
         await self._ensure_open()
         assert self._conn is not None
@@ -597,6 +768,19 @@ class SQLiteStore(Store):
 
     @override
     async def getsize_prefix(self, prefix: str) -> int:
+        """Return the total size in bytes of all values under a prefix.
+
+        Parameters
+        ----------
+        prefix : str
+            The prefix of keys to measure. An empty prefix means all values
+            in the store.
+
+        Returns
+        -------
+        int
+            The sum of the sizes of all matching values, in bytes.
+        """
         await self._ensure_open()
         assert self._conn is not None
         params: Sequence[str] = ()

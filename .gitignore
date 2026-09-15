@@ -16,6 +16,9 @@ wheels/
 .vscode/
 .idea/
 
+# Generated documentation
+site/
+
 # Database files used in tests and benchmarks
 *.db
 *.zarrdb
