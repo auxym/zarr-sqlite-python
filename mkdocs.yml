@@ -4,7 +4,9 @@ repo_url: https://github.com/auxym/zarr-sqlite
 edit_uri: edit/main/docs/
 
 theme:
-  name: mkdocs
+  name: material
+  icon:
+    repo: fontawesome/brands/github
 
 docs_dir: docs
 
