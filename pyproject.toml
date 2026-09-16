@@ -25,11 +25,9 @@ build-backend = "uv_build"
 
 [dependency-groups]
 dev = [
-    "mkdocs>=1.6.1",
-    "mkdocs-material>=9.7.7",
-    "mkdocstrings[python]>=1.0.6",
     "mypy==2.3.0",
     "numpy>=2.3.2",
+    "pdoc>=16.0.0",
     "pytest>=8.4.1",
     "pytest-asyncio>=1.1.0",
     "pytest-benchmark>=5.2.3",
@@ -42,3 +40,7 @@ markers = [
 ]
 python_files = ["test_*.py", "benchmark_*.py"]
 testpaths = ["test"]
+
+[tool.pdoc]
+docformat = "numpy"
+exclude = ["zarr_sqlite._db_utils", "zarr_sqlite.async_sqlite", "zarr_sqlite._version", "zarr_sqlite.zarr_sqlite"]
