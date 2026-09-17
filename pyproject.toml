@@ -40,7 +40,3 @@ markers = [
 ]
 python_files = ["test_*.py", "benchmark_*.py"]
 testpaths = ["test"]
-
-[tool.pdoc]
-docformat = "numpy"
-exclude = ["zarr_sqlite._db_utils", "zarr_sqlite.async_sqlite", "zarr_sqlite._version", "zarr_sqlite.zarr_sqlite"]
