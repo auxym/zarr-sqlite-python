@@ -15,6 +15,7 @@ wheels/
 # Editor and IDE files
 .vscode/
 .idea/
+.kilo/
 
 # Generated documentation
 site/

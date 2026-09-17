@@ -1,4 +1,4 @@
-"""Python library which provdes a single-file store implementation for
+"""Python library which provides a single-file store implementation for
 [zarr-python](https://zarr.readthedocs.io/en/stable/), backed by SQLite.
 
 `SQLiteStore` allows you to store Zarr datasets in a single
@@ -44,6 +44,10 @@ The file format is described by a [specification stored in this project's
 repository](https://github.com/auxym/zarr-sqlite/blob/main/SPEC.md).  This
 document should allow the implementation of SQLiteStore for other programming
 languages or Zarr libraries.
+
+## API Reference
+
+The `SQLiteStore` class implements the [zarr-python `Store` interface](https://zarr.readthedocs.io/en/stable/api/zarr/storage.html#zarr.abc.store.Store).
 """
 
 from .zarr_sqlite import SQLiteStore
