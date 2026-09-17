@@ -8,6 +8,7 @@ real SQLite database.
 from datetime import datetime, timezone, timedelta
 import re
 import sqlite3
+from contextlib import closing
 from tempfile import NamedTemporaryFile
 
 import pytest
@@ -105,7 +106,7 @@ def fresh_db():
     """Create a fresh, empty SQLite database file for raw SQL testing."""
     with NamedTemporaryFile(suffix=".db", delete=True, delete_on_close=False) as fp:
         fp.close()
-        with sqlite3.connect(fp.name, autocommit=True) as con:
+        with closing(sqlite3.connect(fp.name, autocommit=True)) as con:
             yield con
 
 
@@ -119,7 +120,7 @@ def store_db():
     """
     with NamedTemporaryFile(suffix=".zarrdb", delete=True, delete_on_close=False) as fp:
         fp.close()
-        with sqlite3.connect(fp.name, autocommit=True) as con:
+        with closing(sqlite3.connect(fp.name, autocommit=True)) as con:
             con.execute(f"PRAGMA application_id = {hex(_APP_ID)}")
             con.execute(
                 "CREATE TABLE IF NOT EXISTS zarr_sqlitestore_metadata("

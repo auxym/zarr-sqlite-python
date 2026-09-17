@@ -2,6 +2,7 @@
 
 import os
 import sqlite3
+from contextlib import closing
 import pytest
 import numpy as np
 import zarr
@@ -187,6 +188,6 @@ def test_store_close_cleans_up_wal_files(tempstore):
     assert not os.path.exists(tempstore.database + "-shm")
 
     # Open a raw sqlite3 connection and verify WAL is clean
-    with sqlite3.connect(tempstore.database) as con:
+    with closing(sqlite3.connect(tempstore.database)) as con:
         result = con.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchone()
         assert result == (0, 0, 0)

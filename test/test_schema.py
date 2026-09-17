@@ -3,6 +3,7 @@
 import datetime
 import re
 import sqlite3
+from contextlib import closing
 
 import pytest
 
@@ -24,9 +25,10 @@ from test.helpers import make_buffer, get_as_bytes
 async def test_schema_tables_exist(tempstore):
     """Both required tables are created on first use."""
     await tempstore.set("key", make_buffer(b"data"))
-    with sqlite3.connect(tempstore.database) as con:
+    with closing(sqlite3.connect(tempstore.database)) as con:
         cur = con.execute("SELECT name FROM sqlite_master WHERE type='table'")
         tables = {row[0] for row in cur.fetchall()}
+        cur.close()
     assert "zarr" in tables
     assert "zarr_sqlitestore_metadata" in tables
 
@@ -35,31 +37,34 @@ async def test_schema_tables_exist(tempstore):
 async def test_schema_not_null_constraints(tempstore):
     """Both k and v columns in both tables have NOT NULL."""
     await tempstore.set("key", make_buffer(b"data"))
-    with sqlite3.connect(tempstore.database) as con:
+    with closing(sqlite3.connect(tempstore.database)) as con:
         for table in ("zarr", "zarr_sqlitestore_metadata"):
             cur = con.execute(f"PRAGMA table_info({table})")
             for row in cur.fetchall():
                 assert row[3] == 1, (
                     f"Column '{row[1]}' in table '{table}' must have NOT NULL"
                 )
+            cur.close()
 
 
 @pytest.mark.asyncio
 async def test_schema_application_id(tempstore):
     """application_id is set to the spec value."""
     await tempstore.set("key", make_buffer(b"data"))
-    with sqlite3.connect(tempstore.database) as con:
+    with closing(sqlite3.connect(tempstore.database)) as con:
         cur = con.execute("PRAGMA application_id")
         assert cur.fetchone()[0] == _SQLITESTORE_APPLICATION_ID
+        cur.close()
 
 
 @pytest.mark.asyncio
 async def test_metadata_required_records(tempstore):
     """All required metadata records exist with correct values."""
     await tempstore.set("key", make_buffer(b"data"))
-    with sqlite3.connect(tempstore.database) as con:
+    with closing(sqlite3.connect(tempstore.database)) as con:
         cur = con.execute("SELECT k, v FROM zarr_sqlitestore_metadata")
         metadata = dict(cur.fetchall())
+        cur.close()
     assert metadata["sqlitestore_version"] == _SQLITESTORE_SPEC_VERSION
     assert metadata["compatible_flags"] == ""
     assert metadata["incompatible_flags"] == ""
@@ -71,9 +76,10 @@ async def test_metadata_required_records(tempstore):
 async def test_metadata_created_by(tempstore):
     """created_by contains the package name."""
     await tempstore.set("key", make_buffer(b"data"))
-    with sqlite3.connect(tempstore.database) as con:
+    with closing(sqlite3.connect(tempstore.database)) as con:
         cur = con.execute("SELECT v FROM zarr_sqlitestore_metadata WHERE k = 'created_by'")
         created_by = cur.fetchone()[0]
+        cur.close()
     assert created_by.startswith("zarr-sqlite-python")
 
 
@@ -82,9 +88,10 @@ async def test_metadata_modified_at(tempstore):
     """modified_at is a spec-conforming timestamp within the last 5 minutes."""
 
     await tempstore.set("key", make_buffer(b"data"))
-    with sqlite3.connect(tempstore.database) as con:
+    with closing(sqlite3.connect(tempstore.database)) as con:
         cur = con.execute("SELECT v FROM zarr_sqlitestore_metadata WHERE k = 'modified_at'")
         modified_at = cur.fetchone()[0]
+        cur.close()
 
     # Timestamp must be a valid RFC-3339 date-time timestamp, must be in UTC time zone,
     # must end in upper case "Z" and the date-time separator must be uppercase "T".
@@ -108,7 +115,7 @@ async def test_validate_missing_zarr_table(tempstore):
     await tempstore.set("key", make_buffer(b"data"))
     tempstore.close()
 
-    with sqlite3.connect(tempstore.database, autocommit=True) as con:
+    with closing(sqlite3.connect(tempstore.database, autocommit=True)) as con:
         con.execute("DROP TABLE zarr")
 
     store = SQLiteStore(tempstore.database, read_only=True)
@@ -122,7 +129,7 @@ async def test_validate_missing_metadata_table(tempstore):
     await tempstore.set("key", make_buffer(b"data"))
     tempstore.close()
 
-    with sqlite3.connect(tempstore.database, autocommit=True) as con:
+    with closing(sqlite3.connect(tempstore.database, autocommit=True)) as con:
         con.execute("DROP TABLE zarr_sqlitestore_metadata")
 
     store = SQLiteStore(tempstore.database, read_only=True)
@@ -138,7 +145,7 @@ async def test_validate_missing_metadata_record(tempstore):
     await tempstore.set("key", make_buffer(b"data"))
     tempstore.close()
 
-    with sqlite3.connect(tempstore.database, autocommit=True) as con:
+    with closing(sqlite3.connect(tempstore.database, autocommit=True)) as con:
         con.execute("DELETE FROM zarr_sqlitestore_metadata WHERE k = 'sqlitestore_version'")
 
     store = SQLiteStore(tempstore.database, read_only=True)
@@ -154,7 +161,7 @@ async def test_validate_invalid_version(tempstore):
     await tempstore.set("key", make_buffer(b"data"))
     tempstore.close()
 
-    with sqlite3.connect(tempstore.database, autocommit=True) as con:
+    with closing(sqlite3.connect(tempstore.database, autocommit=True)) as con:
         con.execute(
             "UPDATE zarr_sqlitestore_metadata SET v = 'invalid' WHERE k = 'sqlitestore_version'"
         )
@@ -170,7 +177,7 @@ async def test_validate_unsupported_major_version(tempstore):
     await tempstore.set("key", make_buffer(b"data"))
     tempstore.close()
 
-    with sqlite3.connect(tempstore.database, autocommit=True) as con:
+    with closing(sqlite3.connect(tempstore.database, autocommit=True)) as con:
         con.execute(
             "UPDATE zarr_sqlitestore_metadata SET v = '2.0' WHERE k = 'sqlitestore_version'"
         )
@@ -186,7 +193,7 @@ async def test_validate_unknown_incompatible_flag(tempstore):
     await tempstore.set("key", make_buffer(b"data"))
     tempstore.close()
 
-    with sqlite3.connect(tempstore.database, autocommit=True) as con:
+    with closing(sqlite3.connect(tempstore.database, autocommit=True)) as con:
         con.execute(
             "UPDATE zarr_sqlitestore_metadata SET v = 'unknown_flag' "
             "WHERE k = 'incompatible_flags'"
@@ -216,7 +223,7 @@ async def test_validate_wrong_application_id_writable(tempstore):
     await tempstore.set("key", make_buffer(b"data"))
     tempstore.close()
 
-    with sqlite3.connect(tempstore.database, autocommit=True) as con:
+    with closing(sqlite3.connect(tempstore.database, autocommit=True)) as con:
         con.execute("PRAGMA application_id = 0")
 
     store = SQLiteStore(tempstore.database, read_only=False)
@@ -233,7 +240,7 @@ async def test_validate_wrong_application_id_read_only(
     await tempstore.set("key", make_buffer(b"data"))
     tempstore.close()
 
-    with sqlite3.connect(tempstore.database, autocommit=True) as con:
+    with closing(sqlite3.connect(tempstore.database, autocommit=True)) as con:
         con.execute("PRAGMA application_id = 0")
 
     store = SQLiteStore(tempstore.database, read_only=True)

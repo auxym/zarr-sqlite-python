@@ -1,6 +1,7 @@
 """Unit tests for the fundamental store interface of SQLiteStore."""
 
 import sqlite3
+from contextlib import closing
 
 import pytest
 from zarr.core.buffer import default_buffer_prototype
@@ -96,7 +97,7 @@ async def test_get_suffix_larger_than_length(memstore):
 @pytest.mark.asyncio
 async def test_get_non_bytes(tempstore):
     await tempstore.set("dummy", make_buffer(b"data"))
-    with sqlite3.connect(tempstore.database, autocommit=True) as con:
+    with closing(sqlite3.connect(tempstore.database, autocommit=True)) as con:
         con.execute("INSERT INTO zarr (k, v) VALUES (?, ?)", ("k", 5))
     assert await tempstore.get("k", default_buffer_prototype()) is None
 
@@ -156,7 +157,7 @@ async def test_set_overwrites_preserves_rowid(tempstore):
     """Overwriting an existing key with set() should preserve the rowid."""
     await tempstore.set("k", make_buffer(b"first"))
 
-    with sqlite3.connect(tempstore.database) as con:
+    with closing(sqlite3.connect(tempstore.database)) as con:
         rowid_before = con.execute(
             "SELECT rowid FROM zarr WHERE k = ?", ("k",)
         ).fetchone()[0]
