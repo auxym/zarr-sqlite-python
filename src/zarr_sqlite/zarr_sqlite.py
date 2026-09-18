@@ -62,11 +62,11 @@ class SQLiteStore(Store):
         read-only. Default: False (read-write).
     journal_mode : str, optional
         SQLite journaling mode. ``"WAL"`` (write-ahead log) or ``"DELETE"``
-        are supported. If ``None``, the journaling mode will be the databases's
+        are supported. If ``None``, the journaling mode will be the database's
         previously set value, or SQLite's default for a new database. Default: WAL.
     page_size : int, optional
         SQLite page size in bytes. The default value of 4096 bytes has been found
-        provide good all-around performance for approximately 1 MB chunks.
+        to provide good all-around performance for approximately 1 MB chunks.
     """
 
     _database: str
@@ -136,9 +136,9 @@ class SQLiteStore(Store):
         Parameters
         ----------
         database : str
-            File path or  sqlite-compatible URI (must have `file:` scheme). If
+            File path or sqlite-compatible URI (must have `file:` scheme). If
             `database` is a URI, the parameters will be kept unmodified, except
-            "mode", which will always be overwritten or added base on the value
+            "mode", which will always be overwritten or added based on the value
             of `read_only`.
         read_only : bool
             Whether the store is read-only
@@ -377,8 +377,8 @@ class SQLiteStore(Store):
         clause like "(...) WHERE k < :lower_bound AND k > :upper_bound".
 
         The upper bound string is obtained by replacing the trailing slash (/)
-        character in a prefix with a zero (0) character, which is the next
-        character is lexicographical order (in ASCII and Unicode).
+        character in a prefix with a zero (0)         character, which is the next
+        character in lexicographical order (in ASCII and Unicode).
 
         We do not use GLOB or LIKE in prefix searches because they have many
         issues in SQLite. For example, LIKE does not support case-sensitive
