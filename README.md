@@ -1,15 +1,34 @@
 # zarr-sqlite-python
 
-SQLite-based single-file store for [zarr](https://zarr.dev/) v3 datasets, in Python.
+**Store [Zarr](zarr.dev) datasets in a single SQLite database.**
 
-SQLiteStore provides a single-file storage backend for Zarr. Key advantages over alternative single-file formats (e.g., ZipStore):
+`zarr-sqlite` is a Python library which provides `SQLiteStore`, a single-file store implementation
+backed by SQLite for [zarr-python](https://zarr.readthedocs.io/en/stable/). It combines Zarr's chunked, hierarchical data model with SQLite's single-file database format, mutability and ACID guarantees.
 
-  - Support for key deletion, overwriting, and partial value writes.
-  - Full ACID guarantees provided by SQLite.
-  - High availability of SQLite implementations across programming languages
-    and environments.
+## Why SQLiteStore?
 
-Example usage:
+* Single file — complete Zarr hierarchy is stored in one .zarrdb file.
+* ACID transactions — writes are backed by SQLite's transactional database
+  engine. A crash or power loss during a write cannot corrupt the entire file,
+  at most, a single chunk may be lost. Readers can safely access the store
+  concurrently with writers and are guaranteed to see a consistent view of the
+  data.
+* Mutable storage — arrays can be modified, overwritten, resized, appended to 
+  and deleted.
+
+## Installation
+
+Install from PyPI using your favorite package manager, for example:
+
+```
+pip install zarr-sqlite
+```
+
+```
+uv add zarr-sqlite
+```
+
+## Quick start
 
 ```python
 import zarr
@@ -18,29 +37,50 @@ from zarr_sqlite import SQLiteStore
 
 with SQLiteStore("my_zarr_file.zarrdb") as store:
     root = zarr.create_group(store=store)
-    foo = root.create_group('foo')
-    bar = foo.create_group('bar')
-    z1 = bar.create_array(name='baz', shape=(10000, 10000), chunks=(1000, 1000), dtype='int32')
+    foo = root.create_group("foo")
+    bar = foo.create_group("bar")
+    z1 = bar.create_array(name="baz", shape=(10000, 10000), chunks=(1000, 1000), dtype="int32")
     z1[:] = 42
 ```
 
-`SQLiteStore` otherwise behaves identically to other stores used with zarr, see
-the [zarr user guide](https://zarr.readthedocs.io/en/stable/user-guide/storage.html)
+`SQLiteStore` otherwise behaves identically to other stores used with zarr.
+See the [zarr-python user guide](https://zarr.readthedocs.io/en/stable/user-guide/storage.html)
 for more information.
+
+## Documentation
+
+There isn't much more to using `SQLiteStore` as it "just works" with
+zarr-python. Full API reference can be accessed by running `uv run pdoc -d
+numpy` (or `just doc` if you have [just](https://just.systems/) installed).
+
+A copy of the API documentation for the current *main* branch is also hosted here:
+
+**[Documentation for zarr_sqlite](https://auxym.github.io/zarr-sqlite-python)**
+
+## How it works
+
+`SQLiteStore` implements the [abstract store
+interface](https://zarr-specs.readthedocs.io/en/latest/v3/core/index.html#abstract-store-interface)
+defined by the Zarr Core Specification, which essentially provides a key-value
+storage interface. It maps this interface directly onto a SQLite table, using
+string keys and binary BLOB values. Keys correspond to Zarr paths, while values
+contain either array chunks or Zarr metadata items. SQLite then provides the
+persistence and transactional semantics underneath the Zarr store.
+
 
 ## Specification
 
-The store format is described in the document [SPEC.md](/SPEC.md). This document
-should allow the implementation of SQLiteStore for other programming languages
-or Zarr libraries.
+The file format is described by a [specification stored in this project's
+repository](./SPEC.md).  This document should allow the implementation of
+SQLiteStore for other programming languages or Zarr libraries.
 
 ## Status
 
 The version of this library was incremented to v1.0 to reflect the fact that it
 complies with v1 of the SQLiteStore Specification. However, this is a relatively
-new library that has not seen a lot of real-world use yet, therefore users should
-expect the occasional bug, and possibly breaking API changes in future versions,
-if absolutely necessary.
+young library that has not seen a lot of real-world use yet, therefore users
+should expect the occasional bug, and possibly breaking API changes in future
+versions, if absolutely necessary.
 
-The database format however, defined by the Specification, can be expected to be
-stable.
+The database format defined by the [Specification](./SPEC.md) is intended to provide
+a stable basis for interoperability between implementations.

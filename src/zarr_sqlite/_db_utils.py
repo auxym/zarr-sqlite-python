@@ -1,10 +1,14 @@
 def is_in_memory_database(database: str) -> bool:
     """Check whether a database specifier refers to an in-memory database.
 
-    Args:
-        database: The SQLite database specifier (path, URI, or ":memory:").
+    Parameters
+    ----------
+    database : str
+        The SQLite database specifier (path, URI, or ":memory:").
 
-    Returns:
+    Returns
+    -------
+    bool
         True if the database is in-memory, False otherwise.
     """
     return database == ":memory:" or (
@@ -18,10 +22,14 @@ def is_database_uri(database: str) -> bool:
     SQLite URIs use the ``file:`` scheme, e.g. ``file:/path/to/db`` or
     ``file::memory:?mode=memory``.
 
-    Args:
-        database: The SQLite database specifier.
+    Parameters
+    ----------
+    database : str
+        The SQLite database specifier.
 
-    Returns:
+    Returns
+    -------
+    bool
         True if the database is a URI, False otherwise.
     """
     return database.startswith("file:/")

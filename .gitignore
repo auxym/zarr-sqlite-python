@@ -15,6 +15,10 @@ wheels/
 # Editor and IDE files
 .vscode/
 .idea/
+.kilo/
+
+# Generated documentation
+site/
 
 # Database files used in tests and benchmarks
 *.db

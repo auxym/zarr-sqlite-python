@@ -50,23 +50,23 @@ def _validate_key(key: str):
 
 
 class SQLiteStore(Store):
-    """
-    Store for the local file system.
+    """Single-file SQLite-backed store for Zarr datasets.
 
     Parameters
     ----------
     database : str or Path
-        Directory to use as root of store.
-    read_only : bool
-        Whether the store is read-only
-
-    Attributes
-    ----------
-    supports_writes
-    supports_deletes
-    supports_partial_writes
-    supports_listing
-    root
+        Path to the SQLite database file, or ``:memory:`` for an in-memory
+        database. The file will be created if it does not already exist.
+    read_only : bool, optional
+        Whether the store is read-only. In-memory databases cannot be opened
+        read-only. Default: False (read-write).
+    journal_mode : str, optional
+        SQLite journaling mode. ``"WAL"`` (write-ahead log) or ``"DELETE"``
+        are supported. If ``None``, the journaling mode will be the database's
+        previously set value, or SQLite's default for a new database. Default: WAL.
+    page_size : int, optional
+        SQLite page size in bytes. The default value of 4096 bytes has been found
+        to provide good all-around performance for approximately 1 MB chunks.
     """
 
     _database: str
@@ -80,16 +80,19 @@ class SQLiteStore(Store):
     @property
     @override
     def supports_writes(self) -> bool:
+        """`True`"""
         return True
 
     @property
     @override
     def supports_deletes(self) -> bool:
+        """`True`"""
         return True
 
     @property
     @override
     def supports_listing(self) -> bool:
+        """`True`"""
         return True
 
     def __init__(
@@ -118,10 +121,12 @@ class SQLiteStore(Store):
             self._database = self._database_as_uri(self.database, read_only)
 
     @property
-    def database(self):
+    def database(self) -> str:
+        """The database path or URI as a string."""
         return self._database
 
     def is_in_memory(self) -> bool:
+        """Return whether the database is in-memory."""
         return is_in_memory_database(self._database)
 
     @staticmethod
@@ -131,9 +136,9 @@ class SQLiteStore(Store):
         Parameters
         ----------
         database : str
-            File path or  sqlite-compatible URI (must have `file:` scheme). If
+            File path or sqlite-compatible URI (must have `file:` scheme). If
             `database` is a URI, the parameters will be kept unmodified, except
-            "mode", which will always be overwritten or added base on the value
+            "mode", which will always be overwritten or added based on the value
             of `read_only`.
         read_only : bool
             Whether the store is read-only
@@ -372,8 +377,8 @@ class SQLiteStore(Store):
         clause like "(...) WHERE k < :lower_bound AND k > :upper_bound".
 
         The upper bound string is obtained by replacing the trailing slash (/)
-        character in a prefix with a zero (0) character, which is the next
-        character is lexicographical order (in ASCII and Unicode).
+        character in a prefix with a zero (0)         character, which is the next
+        character in lexicographical order (in ASCII and Unicode).
 
         We do not use GLOB or LIKE in prefix searches because they have many
         issues in SQLite. For example, LIKE does not support case-sensitive
@@ -423,7 +428,6 @@ class SQLiteStore(Store):
 
     @override
     def __eq__(self, other: object) -> bool:
-        """Equality comparison."""
         if not isinstance(other, type(self)):
             return False
 
@@ -489,6 +493,17 @@ class SQLiteStore(Store):
 
     @override
     async def set(self, key: str, value: Buffer) -> None:
+        """Store a (key, value) pair.
+
+        If the key already exists, its value is replaced.
+
+        Parameters
+        ----------
+        key : str
+            The key to store under.
+        value : Buffer
+            The value to store.
+        """
         self._check_writable()
         _validate_key(key)
         await self._ensure_open()
