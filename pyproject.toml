@@ -19,6 +19,11 @@ test = [
     "pytest>=8.4.1",
 ]
 
+[project.urls]
+Documentation = "https://auxym.github.io/zarr-sqlite-python/zarr_sqlite.html"
+Source = "https://github.com/auxym/zarr-sqlite-python"
+"Format specification" = "https://github.com/auxym/zarr-sqlite-python/blob/main/SPEC.md"
+
 [build-system]
 requires = ["uv_build>=0.8.3,<0.9.0"]
 build-backend = "uv_build"
