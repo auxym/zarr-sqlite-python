@@ -10,3 +10,6 @@ build-docs:
 
 doc:
     uv run pdoc -d numpy zarr_sqlite
+
+tag-version:
+    git tag v$(uv version --short)

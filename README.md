@@ -2,6 +2,8 @@
 
 **Store [Zarr](zarr.dev) datasets in a single SQLite database.**
 
+[![PyPI version](https://img.shields.io/pypi/v/zarr-sqlite.svg)](https://pypi.org/project/zarr-sqlite/)
+
 `zarr-sqlite` is a Python library which provides `SQLiteStore`, a single-file store implementation
 backed by SQLite for [zarr-python](https://zarr.readthedocs.io/en/stable/). It combines Zarr's chunked, hierarchical data model with SQLite's single-file database format, mutability and ACID guarantees.
 
@@ -15,6 +17,12 @@ backed by SQLite for [zarr-python](https://zarr.readthedocs.io/en/stable/). It c
   data.
 * Mutable storage — arrays can be modified, overwritten, resized, appended to 
   and deleted.
+
+`SQLiteStore` is primarily intended for relatively small Zarr datasets (typically
+up to a few gigabytes) where the convenience of a single file is useful for
+archival, distribution, or sharing. It is not intended as an alternative to
+cloud-based object storage designed for chunk-level access to multi-terabyte
+datasets.
 
 ## Installation
 
@@ -66,7 +74,6 @@ storage interface. It maps this interface directly onto a SQLite table, using
 string keys and binary BLOB values. Keys correspond to Zarr paths, while values
 contain either array chunks or Zarr metadata items. SQLite then provides the
 persistence and transactional semantics underneath the Zarr store.
-
 
 ## Specification
 
