@@ -1,6 +1,6 @@
 [project]
 name = "zarr-sqlite"
-version = "1.0.0"
+version = "1.0.1"
 description = "Single-file Zarr v3 dataset store using SQLite"
 readme = "README.md"
 authors = [
