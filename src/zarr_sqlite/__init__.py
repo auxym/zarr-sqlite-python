@@ -13,7 +13,7 @@ mutability and ACID guarantees.
   at most, a single chunk may be lost. Readers can safely access the store
   concurrently with writers and are guaranteed to see a consistent view of the
   data.
-* Mutable storage — arrays can be modified, overwritten, resized, appended to 
+* Mutable storage — arrays can be modified, overwritten, resized, appended to
   and deleted.
 
 `SQLiteStore` is primarily intended for relatively small Zarr datasets (typically
@@ -85,8 +85,7 @@ a stable basis for interoperability between implementations.
 The `SQLiteStore` class implements the [zarr-python `Store` interface](https://zarr.readthedocs.io/en/stable/api/zarr/storage.html#zarr.abc.store.Store).
 """
 
-from .zarr_sqlite import SQLiteStore
-
+from .zarr_sqlite import SQLiteStore, is_zarr_sqlite
 from ._version import __version__
 
 __all__ = ["__version__", "SQLiteStore"]

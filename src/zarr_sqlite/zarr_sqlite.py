@@ -33,6 +33,29 @@ _SQLITESTORE_APPLICATION_ID = 0x10B50760
 _CREATED_BY = f"zarr-sqlite-python v{__version__}"
 
 
+def is_zarr_sqlite(dbname: str) -> bool:
+    """test if database file is a valid zarr_sqlite.SQLStore
+    a valid file has tables 'zarr' and 'zarr_sqlitestore_metadata',
+    and the 'zarr_sqlitestore_metadata' table has keys
+    'sqlitestore_version' and 'created_by'
+    """
+    try:
+        dbconn  = sqlite3.connect(dbname)
+    except Exception:
+        return False
+
+    tables = []
+    cursor = dbconn.cursor()
+    cursor.execute("select name from sqlite_master where type='table';")
+    tables = [row[0] for row in cursor.fetchall()]
+    valid = ('zarr' in tables and 'zarr_sqlitestore_metadata' in tables)
+
+    if valid:
+        cursor.execute("select k from zarr_sqlitestore_metadata;")
+        mkeys = [row[0] for row in cursor.fetchall()]
+        valid = ('sqlitestore_version' in mkeys and 'created_by' in mkeys)
+    return valid
+
 def _validate_key(key: str):
     """Validates a key according to SQLiteStore specification
 
